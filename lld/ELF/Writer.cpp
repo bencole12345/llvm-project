@@ -1123,6 +1123,8 @@ void PhdrEntry::add(OutputSection *sec) {
   p_align = std::max(p_align, sec->alignment);
   if (p_type == PT_LOAD)
     sec->ptLoad = this;
+  if (p_type == PT_TLS)
+    sec->ptTLS = this;
 }
 
 // The beginning and the ending of .rel[a].plt section are marked
