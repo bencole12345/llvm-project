@@ -103,6 +103,8 @@ public:
 
   static CheriCapabilityTableABI cheriCapabilityTableABI();
 
+  static bool isCheriOSABI();
+
   /// getAssemblyLanguage - If this returns a non-empty string this represents
   /// the textual name of the assembly language that we will use for this
   /// target, e.g. masm.
