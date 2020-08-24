@@ -872,7 +872,9 @@ uint64_t InputSectionBase::getRelocTargetVA(const InputFile *file, RelType type,
   case R_CHERI_CAPABILITY_TABLE_INDEX_CALL:
   case R_CHERI_CAPABILITY_TABLE_INDEX_CALL_SMALL_IMMEDIATE:
     assert(a == 0 && "capability table index relocs should not have addends");
-    return config->capabilitySize * in.cheriCapTable->getIndex(sym, isec, offset);
+    return config->capabilitySize *
+           (sym.isTls() ? in.cheriCapTableLocal : in.cheriCapTable)
+               ->getIndex(sym, isec, offset);
   case R_CHERI_CAPABILITY_TABLE_ENTRY_PC: {
     assert(a == 0 && "capability table entry relocs should not have addends");
     uint64_t capTableOffset =
