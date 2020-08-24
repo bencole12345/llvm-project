@@ -223,6 +223,7 @@ struct Configuration {
   bool warnMissingEntry;
   bool warnSymbolOrdering;
   bool writeAddends;
+  bool outputStats;
   // -z captabledebug: add additional symbols $captable_load_<symbols> before
   // each captable clc instruction that indicates which symbol should be loaded
   bool zCapTableDebug;
@@ -355,6 +356,19 @@ struct Configuration {
 
   // True if we are creating a pure-capability CheriABI output.
   bool isCheriAbi = false;
+
+  inline bool isCheriOS() const { return cheriOSABI; }
+
+  inline void setIsCheriOS(bool Set) {
+    if (!Set)
+      return;
+    cheriOSABI = true;
+  }
+
+private:
+
+  bool cheriOSABI = false;
+
 };
 
 // The only instance of Configuration struct.
