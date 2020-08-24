@@ -307,6 +307,11 @@ extern bool LargeCapTable;
       return MVT::i32;
     }
 
+    const MCExpr *LowerCustomJumpTableEntry(const MachineJumpTableInfo *MJTI,
+                                            const MachineBasicBlock *MBB,
+                                            unsigned uid,
+                                            MCContext &Ctx) const override;
+
     EVT getTypeForExtReturn(LLVMContext &Context, EVT VT,
                             ISD::NodeType) const override;
 
