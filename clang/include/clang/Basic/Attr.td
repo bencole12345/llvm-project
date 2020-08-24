@@ -1778,6 +1778,16 @@ def NoEscape : Attr {
   let Documentation = [NoEscapeDocs];
 }
 
+def TemporalSafe : InheritableAttr {
+  let Spellings = [GCC<"temporal_safe">];
+  let Documentation = [Undocumented];
+}
+
+def TemporalUnsafe : InheritableAttr {
+  let Spellings = [GCC<"temporal_unsafe">];
+  let Documentation = [Undocumented];
+}
+
 def AssumeAligned : InheritableAttr {
   let Spellings = [GCC<"assume_aligned">];
   let Subjects = SubjectList<[ObjCMethod, Function]>;
