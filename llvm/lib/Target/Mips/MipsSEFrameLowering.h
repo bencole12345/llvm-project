@@ -27,6 +27,9 @@ public:
   void emitPrologue(MachineFunction &MF, MachineBasicBlock &MBB) const override;
   void emitEpilogue(MachineFunction &MF, MachineBasicBlock &MBB) const override;
 
+  int createUnsafeEndObject(MachineFunction &MF) const override;
+  bool partitionUnsafeObjects(void) const override;
+
   int getFrameIndexReference(const MachineFunction &MF, int FI,
                              Register &FrameReg) const override;
 
