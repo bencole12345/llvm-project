@@ -147,12 +147,6 @@ def CCall : CheriFmt3CCall<0x05, (outs), (ins CheriOpnd:$cs, CheriOpnd:$cb, uimm
                               "ccall\t${cs}, ${cb}, ${selector}",
                               []>;
 }
-
-let isCall=1, hasDelaySlot=0, isCodeGenOnly = 1 in {
-def CJALRSlotless : CheriFmt2Op<0xc, (outs CheriOpnd:$r1), (ins CheriOpnd:$r2),
-                              "cjalr\t${r2}, ${r1}",
-                              []>;
-}
 def : InstAlias<"CCallTrap $cs, $cb",
                 (CCall CheriOpnd: $cs, CheriOpnd:$cb, 0), 1>;
 def : InstAlias<"CCallFast $cs, $cb",
