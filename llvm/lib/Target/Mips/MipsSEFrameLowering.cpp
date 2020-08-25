@@ -430,7 +430,7 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
   const MipsRegisterInfo &RegInfo =
       *static_cast<const MipsRegisterInfo *>(STI.getRegisterInfo());
 
-  unsigned CapSize = static_cast<const MipsSubtarget &>(MF.getSubtarget()).getCapSizeInBytes();
+  unsigned CapSize = 0;
 
   MachineBasicBlock::iterator MBBI = MBB.begin();
   DebugLoc dl;
@@ -451,6 +451,9 @@ void MipsSEFrameLowering::emitPrologue(MachineFunction &MF,
   MBB.addLiveIn(Mips::DDC);
 
   if (ABI.IsCheriOS()) {
+
+    CapSize = static_cast<const MipsSubtarget &>(MF.getSubtarget()).getCapSizeInBytes();
+
     if (!MF.getRegInfo().isLiveIn(CRD))
       MF.getRegInfo().addLiveIn(CRD);
     if (!MBB.isLiveIn(CRD))
