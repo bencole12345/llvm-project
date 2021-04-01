@@ -165,3 +165,14 @@ def int_cheri_representable_alignment_mask :
 /// another function, etc)
 def int_cheri_bounded_stack_cap :
   Intrinsic<[llvm_fatptr_ty], [llvm_fatptr_ty, llvm_anyint_ty], [IntrNoMem, IntrWillReturn]>;
+
+////////////////////////////////////////////////////////////////////////////////
+// Stack temporal safety functions
+////////////////////////////////////////////////////////////////////////////////
+
+/// This intrinsic checks the arguments to a csc (cap store cap) instruction
+/// and raises an exception if the arguments are incorrectly aligned.
+/// TODO: Use the right offset type
+def int_cheri_check_cap_store_cap :
+  Intrinsic<[], [llvm_fatptr_ty, llvm_fatptr_ty, llvm_i64_ty],
+            [IntrNoMem, IntrWillReturn, IntrHasSideEffects]>;

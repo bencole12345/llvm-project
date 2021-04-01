@@ -14,6 +14,7 @@ add_llvm_component_library(LLVMCodeGen
   CFGuardLongjmp.cpp
   CFIInstrInserter.cpp
   CheriBoundAllocas.cpp
+  CheriInsertLifetimeChecks.cpp
   CodeGen.cpp
   CodeGenPrepare.cpp
   CommandFlags.cpp

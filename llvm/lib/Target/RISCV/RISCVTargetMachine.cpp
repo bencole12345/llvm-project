@@ -158,6 +158,7 @@ TargetPassConfig *RISCVTargetMachine::createPassConfig(PassManagerBase &PM) {
 void RISCVPassConfig::addIRPasses() {
   addPass(createAtomicExpandPass());
   addPass(createCheriBoundAllocasPass());
+  addPass(createCheriInsertLifetimeChecksPass());
   TargetPassConfig::addIRPasses();
 }
 
