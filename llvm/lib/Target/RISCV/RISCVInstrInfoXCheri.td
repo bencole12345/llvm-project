@@ -464,6 +464,9 @@ def SC_CAP_64  : CheriStore_r<0b01011, "sc.cap", GPCR, GPCRMemAtomic>;
 let Predicates = [HasCheri, IsRV64] in
 def SC_CAP_128 : CheriStore_r<0b01100, "sc.cap", GPCR, GPCRMemAtomic>;
 
+let Predicates = [HasCheri, IsRV64] in
+def C_SC_CAP_128 : CheriStore_r<0b01101, "c.sc.cap", GPCR, GPCRMemAtomic>;
+
 let Predicates = [HasCheri, HasStdExtA] in {
 def LR_B_DDC  : CheriLoad_r<0b10000, "lr.b.ddc",  GPR, GPRMemAtomic>;
 def LR_H_DDC  : CheriLoad_r<0b10001, "lr.h.ddc",  GPR, GPRMemAtomic>;
@@ -652,11 +655,19 @@ def CSC_128  : RVInstS<0x4, OPC_STORE, (outs),
                        (ins GPCR:$rs2, GPCR:$rs1, simm12:$imm12),
                        "csc", "$rs2, ${imm12}(${rs1})">;
 
+let DecoderNamespace = "CapModeOnly_",
+    hasSideEffects = 1, mayLoad = 0, mayStore = 0 in
+def CCSC_128 : RVInstS<0x5, OPC_CHERI_MEM, (outs),
+                       (ins GPCR:$rs2, GPCR:$rs1, simm12:$imm12),
+                       "ccsc", "$rs2, ${imm12}(${rs1})">;
+
 let EmitPriority = 0 in {
 def : InstAlias<"clc $rd, (${rs1})",
                 (CLC_128  GPCR:$rd, GPCR:$rs1, 0)>;
 def : InstAlias<"csc $rs2, (${rs1})",
                 (CSC_128  GPCR:$rs2, GPCR:$rs1, 0)>;
+def : InstAlias<"ccsc $rs2, (${rs1})",
+                (CCSC_128 GPCR:$rs2, GPCR:$rs1, 0)>;
 }
 }
 
@@ -689,6 +700,15 @@ def : InstAlias<"cld $rd, (${rs1})",
 def : InstAlias<"csd $rs2, (${rs1})",
                 (CSD  GPR:$rs2, GPCR:$rs1, 0)>;
 } // Predicates = [HasCheri, IsRV64, IsCapMode]
+}
+
+//===----------------------------------------------------------------------===//
+// Temporal Safety Instructions
+//===----------------------------------------------------------------------===//
+
+let Predicates = [HasCheri, IsCapMode] in {
+def : Pat<(int_cheri_check_cap_store_cap GPCR:$rs1, GPCR:$rs2, simm12:$imm12),
+          (CCSC_128 GPCR:$rs1, GPCR:$rs2, simm12:$imm12)>;
 }
 
 /// 'A' (Atomic Instructions) extension
