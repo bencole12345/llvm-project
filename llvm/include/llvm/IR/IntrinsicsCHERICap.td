@@ -174,5 +174,5 @@ def int_cheri_bounded_stack_cap :
 /// and raises an exception if the arguments are incorrectly aligned.
 /// TODO: Use the right offset type
 def int_cheri_check_cap_store_cap :
-  Intrinsic<[], [llvm_fatptr_ty, llvm_fatptr_ty, llvm_i64_ty],
+  Intrinsic<[], [llvm_anyptr_ty, llvm_anyptr_ty, llvm_anyint_ty],
             [IntrNoMem, IntrWillReturn, IntrHasSideEffects]>;

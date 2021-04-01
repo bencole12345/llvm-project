@@ -88,7 +88,7 @@ bool CheriInsertLifetimeChecks::runOnFunction(Function &F, Module *M) {
 
 void CheriInsertLifetimeChecks::insertCheckBefore(StoreInst &I, Module *M) {
   assert(I.getValueOperand()->getType()->isPointerTy());
-  
+
   LLVMContext &Context = I.getContext();
   DataLayout DL(M);
 
@@ -97,17 +97,17 @@ void CheriInsertLifetimeChecks::insertCheckBefore(StoreInst &I, Module *M) {
   unsigned ValueAS = I.getValueOperand()->getType()->getPointerAddressSpace();
 
   // Types of the pointers and offsets
-  Type *PointerTy = IntegerType::getInt8Ty(Context)->getPointerTo(PointerAS);
   Type *SizeTy = Type::getIntNTy(Context, DL.getIndexSizeInBits(ValueAS));
 
   // Insert the ccsc instruction
   IRBuilder<> Builder(&I);
-  Builder.CreateIntrinsic(
-      Intrinsic::cheri_check_cap_store_cap, {},
-      {Builder.CreateBitCast(I.getValueOperand(), PointerTy),
-       Builder.CreateBitCast(I.getPointerOperand(), PointerTy),
-       // TODO: Handle offsets correctly
-       ConstantInt::get(SizeTy, 0)});
+  // TODO: Handle offsets correctly (currently the arguments come from different
+  // capabilities if a getelementptr instruction is used)
+  Builder.CreateIntrinsic(Intrinsic::cheri_check_cap_store_cap,
+                          {I.getValueOperand()->getType(),
+                           I.getPointerOperand()->getType(), SizeTy},
+                          {I.getValueOperand(), I.getPointerOperand(),
+                           ConstantInt::get(SizeTy, 0)});
 }
 
 } // anonymous namespace
