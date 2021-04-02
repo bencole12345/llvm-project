@@ -269,6 +269,11 @@ def CSetBounds      : Cheri_rr<0x8, "csetbounds">;
 def CSetBoundsExact : Cheri_rr<0x9, "csetboundsexact">;
 def CSetBoundsImm   : Cheri_ri<0x2, "csetbounds", 0>;
 } // mayTrap = 1
+// def CSetStackFrameSize : Cheri_rr<0xa, "csetstackframesize">;
+// TODO: Check that the 0 is the default value... it seems to be!
+// UPDATE: It's "simm" ... "signed immediate"?
+// 0 seems appropriate because I want this to be unsigned
+def CSetStackFrameSizeImm : Cheri_ri<0x3, "csetstackframesizeimm", 0>;
 } // let Constraints = "@traps_if_sealed $rs1"
 def CClearTag       : Cheri_r<0xb, "ccleartag", GPCR>;
 let mayTrap = 1 in {
@@ -285,6 +290,8 @@ def : InstAlias<"cincoffsetimm $cd, $cs1, $imm",
                 (CIncOffsetImm GPCR:$cd, GPCR:$cs1, simm12:$imm), 0>;
 def : InstAlias<"csetboundsimm $cd, $cs1, $imm",
                 (CSetBoundsImm GPCR:$cd, GPCR:$cs1, uimm12:$imm), 0>;
+def : InstAlias<"csetstackframesizeimm $cd, $cs1, $imm",
+                (CSetStackFrameSizeImm GPCR:$cd, GPCR:$cs1, uimm12:$imm), 0>;
 }
 
 //===----------------------------------------------------------------------===//
@@ -657,7 +664,7 @@ def CSC_128  : RVInstS<0x4, OPC_STORE, (outs),
 
 let DecoderNamespace = "CapModeOnly_",
     hasSideEffects = 1, mayLoad = 0, mayStore = 0 in
-def CCSC_128 : RVInstS<0x5, OPC_CHERI_MEM, (outs),
+def CCSC_128 : RVInstS<0x5, OPC_STORE, (outs),
                        (ins GPCR:$rs2, GPCR:$rs1, simm12:$imm12),
                        "ccsc", "$rs2, ${imm12}(${rs1})">;
 
@@ -884,6 +891,7 @@ def : PatGpcrSimm12<ptradd, CIncOffsetImm>;
 def : PatGpcrGpr<int_cheri_cap_bounds_set, CSetBounds>;
 def : PatGpcrGpr<int_cheri_cap_bounds_set_exact, CSetBoundsExact>;
 def : PatGpcrUimm12<int_cheri_cap_bounds_set, CSetBoundsImm>;
+def : PatGpcrUimm12<int_cheri_cap_stack_frame_size_set, CSetStackFrameSizeImm>;
 def : PatGpcr<int_cheri_cap_tag_clear, CClearTag>;
 def : PatGpcrGpcr<int_cheri_cap_build, CBuildCap>;
 def : PatGpcrGpcr<int_cheri_cap_type_copy, CCopyType>;

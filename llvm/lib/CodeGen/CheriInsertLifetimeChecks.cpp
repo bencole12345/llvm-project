@@ -21,10 +21,10 @@ using namespace llvm;
 
 namespace {
 
-// Command-line option to disable the check
-static cl::opt<bool> DisableLifetimeChecks(
-    "cheri-disable-stack-lifetime-checks", cl::init(false),
-    cl::desc("Disable insertion of lifetime checks for capability stores"));
+// // Command-line option to disable the check
+// static cl::opt<bool> DisableLifetimeChecks(
+//     "cheri-disable-stack-lifetime-checks", cl::init(false),
+//     cl::desc("Disable insertion of lifetime checks for capability stores"));
 
 /**
  * Inserts lifetime checks to ensure temporal stack safety.
@@ -35,6 +35,7 @@ public:
   CheriInsertLifetimeChecks();
   StringRef getPassName() const override;
   bool runOnModule(Module &Mod) override;
+  virtual void getAnalysisUsage(AnalysisUsage &AU) const override;
 
 private:
   bool runOnFunction(Function &F, Module *M);
@@ -50,17 +51,22 @@ StringRef CheriInsertLifetimeChecks::getPassName() const {
 }
 
 bool CheriInsertLifetimeChecks::runOnModule(Module &Mod) {
-  if (DisableLifetimeChecks)
-    return false;
-
   // For now, just run on each function
   bool modified = false;
   for (Function &F : Mod) {
-    Function *TheFunction = &F;
-    assert(TheFunction && "Invalid function");
+
+    // Dirty hack; will have to sort something better
+    // if (F.getName() == "main")
+    //   continue;
+
     modified |= runOnFunction(F, &Mod);
   }
   return modified;
+}
+
+void CheriInsertLifetimeChecks::getAnalysisUsage(AnalysisUsage &AU) const {
+  // TODO: Add escape analysis pass once that's done
+  return;
 }
 
 bool CheriInsertLifetimeChecks::runOnFunction(Function &F, Module *M) {
@@ -93,7 +99,7 @@ void CheriInsertLifetimeChecks::insertCheckBefore(StoreInst &I, Module *M) {
   DataLayout DL(M);
 
   // Address spaces of the cap used to store and the cap being stored
-  unsigned PointerAS = getLoadStoreAddressSpace(&I);
+  // unsigned PointerAS = getLoadStoreAddressSpace(&I);
   unsigned ValueAS = I.getValueOperand()->getType()->getPointerAddressSpace();
 
   // Types of the pointers and offsets

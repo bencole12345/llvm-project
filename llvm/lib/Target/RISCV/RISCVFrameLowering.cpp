@@ -13,6 +13,9 @@
 #include "RISCVFrameLowering.h"
 #include "RISCVMachineFunctionInfo.h"
 #include "RISCVSubtarget.h"
+#include "Utils/RISCVFrameSizeBits.h"
+#include "Utils/RISCVStackTemporalSafety.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -198,6 +201,87 @@ void RISCVFrameLowering::adjustReg(MachineBasicBlock &MBB,
   }
 }
 
+void RISCVFrameLowering::alignStackForTemporalSafety(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
+    const DebugLoc &DL, MachineRegisterInfo &MRI, const TargetInstrInfo *TII,
+    uint64_t StackFrameSize, Register SPReg, Optional<Register> FPReg) const {
+
+  constexpr int64_t SPSlotSize = 16;
+  const int64_t FPSlotSize = FPReg ? 16 : 0;
+
+  const unsigned NumBitsAlignmentRequired =
+      RISCVFrameSizeBits::getNumBitsAlignmentRequired(StackFrameSize +
+                                                      SPSlotSize + FPSlotSize);
+  const uint64_t Mask = 0xffffffffffffffff << NumBitsAlignmentRequired;
+
+  // Extract the current SP address
+  Register OriginalSPAddr = MRI.createVirtualRegister(&RISCV::GPRRegClass);
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CGetAddr), OriginalSPAddr)
+      .addReg(SPReg);
+
+  // Align it downwards using the mask to obtain the new SP address
+  Register NewSPAddr = MRI.createVirtualRegister(&RISCV::GPRRegClass);
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::ANDI), NewSPAddr)
+      .addReg(OriginalSPAddr, RegState::Kill)
+      .addImm(Mask);
+
+  // Reserve space to store the original stack pointer on the stack
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::ADDI), NewSPAddr)
+      .addReg(NewSPAddr)
+      .addImm(-(SPSlotSize + FPSlotSize));
+
+  // Remember the original SP capability before we update it
+  Register OriginalCSP = MRI.createVirtualRegister(&RISCV::GPCRRegClass);
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CMove), OriginalCSP).addReg(SPReg);
+
+  // Update the stack pointer to its new aligned location
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetAddr), SPReg)
+      .addReg(SPReg)
+      .addReg(NewSPAddr, RegState::Kill);
+
+  // Save the old stack pointer in the slot we reserved
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
+      .addReg(OriginalCSP, RegState::Kill)
+      .addReg(SPReg)
+      .addImm(SPSlotSize);
+
+  // Save the old frame pointer in the slot we reserved
+  if (FPReg)
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
+        .addReg(*FPReg)
+        .addReg(SPReg)
+        .addImm(SPSlotSize + FPSlotSize);
+
+  // Set stack pointer stack frame size bits
+  const unsigned FrameSizeBits =
+      RISCVFrameSizeBits::getFrameSizeBits(StackFrameSize);
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetStackFrameSizeImm), SPReg)
+      .addReg(SPReg)
+      .addImm(FrameSizeBits);
+}
+
+void RISCVFrameLowering::undoAlignStackForTemporalSafety(
+    MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
+    const DebugLoc &DL, MachineRegisterInfo &MRI, const TargetInstrInfo *TII,
+    Register SPReg, Optional<Register> FPReg) const {
+  constexpr int64_t SPSlotOffset = 16;
+  constexpr int64_t FPSlotOffset = 32;
+
+  // Restore the FP register that we saved to the stack (if we are using one)
+  // (Remember to do this before restoring the old stack pointer!)
+  if (FPReg)
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CLC_128), *FPReg)
+        .addReg(SPReg)
+        .addImm(FPSlotOffset);
+
+  // Restore the old stack pointer that we saved to the stack
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CLC_128), SPReg)
+      .addReg(SPReg)
+      .addImm(SPSlotOffset);
+
+  // TODO: Think about whether I need to clear their tags in memory
+}
+
 // Returns the register used to hold the frame pointer.
 Register RISCVFrameLowering::getFPReg() const {
   if (RISCVABI::isCheriPureCapABI(STI.getTargetABI()))
@@ -231,6 +315,7 @@ void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
   auto *RVFI = MF.getInfo<RISCVMachineFunctionInfo>();
   const RISCVRegisterInfo *RI = STI.getRegisterInfo();
   const RISCVInstrInfo *TII = STI.getInstrInfo();
+  MachineRegisterInfo &MRI = MF.getRegInfo();
   MachineBasicBlock::iterator MBBI = MBB.begin();
 
   Register FPReg = getFPReg();
@@ -294,6 +379,15 @@ void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
   if (FirstSPAdjustAmount) {
     StackSize = FirstSPAdjustAmount;
     RealStackSize = FirstSPAdjustAmount;
+  }
+
+  // Shift the stack pointer to ensure alignment
+  if (RISCVStackTemporalSafety::stackTemporalSafetyMitigationsEnabled()) {
+    Optional<Register> FPRegOpt;
+    if (hasFP(MF))
+      FPRegOpt = FPReg;
+    alignStackForTemporalSafety(MBB, MBBI, DL, MRI, TII, RealStackSize, SPReg,
+                                FPRegOpt);
   }
 
   // Allocate space on the stack if necessary.
@@ -432,6 +526,8 @@ void RISCVFrameLowering::emitEpilogue(MachineFunction &MF,
   const RISCVRegisterInfo *RI = STI.getRegisterInfo();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   auto *RVFI = MF.getInfo<RISCVMachineFunctionInfo>();
+  const RISCVInstrInfo *TII = STI.getInstrInfo();
+  MachineRegisterInfo &MRI = MF.getRegInfo();
   Register FPReg = getFPReg();
   Register SPReg = getSPReg();
 
@@ -494,6 +590,13 @@ void RISCVFrameLowering::emitEpilogue(MachineFunction &MF,
 
   // Deallocate stack
   adjustReg(MBB, MBBI, DL, SPReg, SPReg, StackSize, MachineInstr::FrameDestroy);
+
+  if (RISCVStackTemporalSafety::stackTemporalSafetyMitigationsEnabled()) {
+    Optional<Register> FPRegOpt;
+    if (hasFP(MF))
+      FPRegOpt = FPReg;
+    undoAlignStackForTemporalSafety(MBB, MBBI, DL, MRI, TII, SPReg, FPReg);
+  }
 }
 
 int RISCVFrameLowering::getFrameIndexReference(const MachineFunction &MF,
