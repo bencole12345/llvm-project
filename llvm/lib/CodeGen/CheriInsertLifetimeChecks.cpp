@@ -21,11 +21,6 @@ using namespace llvm;
 
 namespace {
 
-// // Command-line option to disable the check
-// static cl::opt<bool> DisableLifetimeChecks(
-//     "cheri-disable-stack-lifetime-checks", cl::init(false),
-//     cl::desc("Disable insertion of lifetime checks for capability stores"));
-
 /**
  * Inserts lifetime checks to ensure temporal stack safety.
  */
@@ -51,14 +46,8 @@ StringRef CheriInsertLifetimeChecks::getPassName() const {
 }
 
 bool CheriInsertLifetimeChecks::runOnModule(Module &Mod) {
-  // For now, just run on each function
   bool modified = false;
   for (Function &F : Mod) {
-
-    // Dirty hack; will have to sort something better
-    // if (F.getName() == "main")
-    //   continue;
-
     modified |= runOnFunction(F, &Mod);
   }
   return modified;
