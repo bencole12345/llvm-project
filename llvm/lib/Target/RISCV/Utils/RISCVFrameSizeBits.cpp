@@ -13,18 +13,23 @@
 namespace llvm {
 namespace RISCVFrameSizeBits {
 
+namespace {
+constexpr unsigned MinAlignment = 6;
+constexpr unsigned NumRepresentibleSizes = 7;
+constexpr unsigned MinRepresentibleFrameSize = 1 << MinAlignment;
+constexpr unsigned MaxRepresentibleFrameSize = MinRepresentibleFrameSize << (NumRepresentibleSizes - 1);
+} // anonymous namespace
+
 // TODO: Add tests for output
 
-unsigned getFrameSizeBits(uint64_t StackFrameSize) {
-  constexpr unsigned MinRepresentibleSize = 64;
-  constexpr unsigned MaxRepresentibleSize = MinRepresentibleSize << 6;
-  if (StackFrameSize > MaxRepresentibleSize) {
-    // TODO: It's heap time
-    llvm_unreachable("Stack frame too big, can't provide temporal safety");
+unsigned getNumBitsAlignmentRequired(uint64_t StackFrameSize) {
+  if (StackFrameSize > MaxRepresentibleFrameSize) {
+    // TODO: It's revocation time
+    llvm_unreachable("Stack frame too large to provide lifetime-based temporal safety");
     return 0;
   }
-  unsigned Bits = 1;
-  StackFrameSize /= MinRepresentibleSize;
+  unsigned Bits = MinAlignment;
+  StackFrameSize = (StackFrameSize - 1) / MinRepresentibleFrameSize;
   while (StackFrameSize) {
     Bits++;
     StackFrameSize >>= 1;
@@ -32,13 +37,8 @@ unsigned getFrameSizeBits(uint64_t StackFrameSize) {
   return Bits;
 }
 
-unsigned getNumBitsAlignmentRequired(uint64_t StackFrameSize) {
-  unsigned N = 0;
-  while (StackFrameSize > 1) {
-    N++;
-    StackFrameSize >>= 1;
-  }
-  return N;
+unsigned getFrameSizeBits(uint64_t StackFrameSize) {
+  return getNumBitsAlignmentRequired(StackFrameSize) - 5;
 }
 
 } // namespace RISCVFrameSizeBits
