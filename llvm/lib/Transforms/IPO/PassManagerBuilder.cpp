@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Transforms/CHERICap.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm-c/Transforms/PassManagerBuilder.h"
 #include "llvm/ADT/STLExtras.h"
@@ -866,6 +867,10 @@ void PassManagerBuilder::populateModulePassManager(
     // Rename anon globals to be able to handle them in the summary
     MPM.add(createNameAnonGlobalPass());
   }
+
+  // This should be last
+  auto stackpass = createCHERISafeStacksPass();
+  if (stackpass) MPM.add(stackpass);
 }
 
 void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
@@ -1048,6 +1053,10 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
   addExtensionsToPM(EP_Peephole, PM);
 
   PM.add(createJumpThreadingPass());
+
+  // Run escape analysis pass
+  auto stackpass = createCHERISafeStacksPass();
+  if (stackpass) PM.add(stackpass);
 }
 
 void PassManagerBuilder::addLateLTOOptimizationPasses(
