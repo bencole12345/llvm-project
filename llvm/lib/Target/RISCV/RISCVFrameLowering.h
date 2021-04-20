@@ -76,12 +76,21 @@ private:
   void adjustReg(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
                  const DebugLoc &DL, Register DestReg, Register SrcReg,
                  int64_t Val, MachineInstr::MIFlag Flag) const;
+
+  /// Determines whether a given function requires lifetime checks.
+  bool requiresLifetimeChecks(MachineFunction &MF) const;
+
+  /// Emits instructions to align the stack pointer for lifetime-based stack
+  /// temporal safety mitigations.
   void alignStackForTemporalSafety(MachineBasicBlock &MBB,
                                    MachineBasicBlock::iterator &MBBI,
                                    const DebugLoc &DL, MachineRegisterInfo &MRI,
                                    const TargetInstrInfo *TII,
                                    uint64_t StackFrameSize, Register SPReg,
                                    Optional<Register> FPReg) const;
+
+  /// Emits instructions to undo the stack alignment that was performed in the
+  /// prolog.
   void undoAlignStackForTemporalSafety(
       MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
       const DebugLoc &DL, MachineRegisterInfo &MRI, const TargetInstrInfo *TII,

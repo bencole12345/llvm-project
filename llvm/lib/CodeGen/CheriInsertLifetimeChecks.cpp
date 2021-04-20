@@ -6,6 +6,7 @@
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Value.h"
@@ -13,13 +14,22 @@
 #include "llvm/Pass.h"
 #include "llvm/PassRegistry.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Target/TargetMachine.h"
+
+#include <string>
 
 #define DEBUG_TYPE "cheri-insert-lifetime-checks"
 using namespace llvm;
 #define DBG_MESSAGE(...) LLVM_DEBUG(dbgs() << DEBUG_TYPE ": " << __VA_ARGS__)
 
 namespace {
+
+const std::string ESCAPE_ANALYSIS_RESULT_METADATA = "stackLifetimeSafety";
+const std::string FUNCTION_MAKES_NO_LIFETIME_CHECKS_METADATA =
+    "containsNoStackLifetimeChecks";
+
+// TODO: Add some statistics
 
 /**
  * Inserts lifetime checks to ensure temporal stack safety.
@@ -30,12 +40,16 @@ public:
   CheriInsertLifetimeChecks();
   StringRef getPassName() const override;
   bool runOnModule(Module &Mod) override;
-  virtual void getAnalysisUsage(AnalysisUsage &AU) const override;
 
 private:
-  bool runOnFunction(Function &F, Module *M);
-  void insertCheckBefore(StoreInst &I, Module *M);
+  bool functionIsDefinitelySafe(Function &F) const;
+  bool runOnFunction(Function &F, Module *M) const;
+  void insertCheckBefore(StoreInst &I, Module *M) const;
+  void setContainsLifetimeChecksMetadata(Function &F,
+                                         bool ContainsLifetimeChecks) const;
 };
+
+} // anonymous namespace
 
 CheriInsertLifetimeChecks::CheriInsertLifetimeChecks() : ModulePass(ID) {
   initializeCheriInsertLifetimeChecksPass(*PassRegistry::getPassRegistry());
@@ -53,35 +67,42 @@ bool CheriInsertLifetimeChecks::runOnModule(Module &Mod) {
   return modified;
 }
 
-void CheriInsertLifetimeChecks::getAnalysisUsage(AnalysisUsage &AU) const {
-  // TODO: Add escape analysis pass once that's done
-  return;
+bool CheriInsertLifetimeChecks::functionIsDefinitelySafe(Function &F) const {
+  MDNode *analysis = F.getMetadata(ESCAPE_ANALYSIS_RESULT_METADATA);
+  if (analysis)
+    return dyn_cast<MDString>(analysis->getOperand(0))
+        ->getString()
+        .equals("safe");
+  else
+    return false;
 }
 
-bool CheriInsertLifetimeChecks::runOnFunction(Function &F, Module *M) {
-  bool modified = false;
+bool CheriInsertLifetimeChecks::runOnFunction(Function &F, Module *M) const {
+  // Don't do anything for non-escaping functions
+  if (functionIsDefinitelySafe(F))
+    return false;
+
+  bool ContainsChecks = false;
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
-
-      // We only want to analyse store instructions
-      if (I.getOpcode() != Instruction::Store)
-        continue;
-      if (!isa<StoreInst>(I))
+      if (I.getOpcode() != Instruction::Store || !isa<StoreInst>(I))
         continue;
       auto &Store = cast<StoreInst>(I);
-
-      // We only care about stores of capabilities, not data
       if (!Store.getValueOperand()->getType()->isPointerTy())
         continue;
 
+      // Now we're definitely looking at a pointer-type store
       insertCheckBefore(Store, M);
-      modified = true;
+      ContainsChecks = true;
     }
   }
-  return modified;
+
+  setContainsLifetimeChecksMetadata(F, ContainsChecks);
+  return ContainsChecks;
 }
 
-void CheriInsertLifetimeChecks::insertCheckBefore(StoreInst &I, Module *M) {
+void CheriInsertLifetimeChecks::insertCheckBefore(StoreInst &I,
+                                                  Module *M) const {
   assert(I.getValueOperand()->getType()->isPointerTy());
 
   LLVMContext &Context = I.getContext();
@@ -105,13 +126,19 @@ void CheriInsertLifetimeChecks::insertCheckBefore(StoreInst &I, Module *M) {
                            ConstantInt::get(SizeTy, 0)});
 }
 
-} // anonymous namespace
+void CheriInsertLifetimeChecks::setContainsLifetimeChecksMetadata(
+    Function &F, bool ContainsLifetimeChecks) const {
+  LLVMContext &C = F.getContext();
+  auto *Node = MDNode::get(
+      C, MDString::get(C, ContainsLifetimeChecks ? "true" : "false"));
+  F.setMetadata(FUNCTION_MAKES_NO_LIFETIME_CHECKS_METADATA, Node);
+}
 
 char CheriInsertLifetimeChecks::ID;
 INITIALIZE_PASS(CheriInsertLifetimeChecks, DEBUG_TYPE,
                 "CHERI insert lifetime checks to store instructions", false,
                 false)
 
-ModulePass *llvm::createCheriInsertLifetimeChecksPass(void) {
+ModulePass *llvm::createCheriInsertLifetimeChecksPass() {
   return new CheriInsertLifetimeChecks();
 }

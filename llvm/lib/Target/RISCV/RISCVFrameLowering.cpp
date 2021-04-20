@@ -24,7 +24,14 @@
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/MC/MCDwarf.h"
 
+#include <string>
+
 using namespace llvm;
+
+namespace {
+const std::string FUNCTION_MAKES_NO_LIFETIME_CHECKS_METADATA =
+    "containsNoStackLifetimeChecks";
+}
 
 // Get the ID of the libcall used for spilling and restoring callee saved
 // registers. The ID is representative of the number of registers saved or
@@ -199,6 +206,17 @@ void RISCVFrameLowering::adjustReg(MachineBasicBlock &MBB,
         .addReg(ScratchReg, RegState::Kill)
         .setMIFlag(Flag);
   }
+}
+
+bool RISCVFrameLowering::requiresLifetimeChecks(MachineFunction &MF) const {
+  Function &F = MF.getFunction();
+  MDNode *analysis = F.getMetadata(FUNCTION_MAKES_NO_LIFETIME_CHECKS_METADATA);
+  if (analysis)
+    return dyn_cast<MDString>(analysis->getOperand(0))
+        ->getString()
+        .equals("true");
+  else
+    return false;
 }
 
 void RISCVFrameLowering::alignStackForTemporalSafety(
@@ -382,7 +400,8 @@ void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
   }
 
   // Shift the stack pointer to ensure alignment
-  if (RISCVStackTemporalSafety::stackTemporalSafetyMitigationsEnabled()) {
+  if (RISCVStackTemporalSafety::stackTemporalSafetyMitigationsEnabled() &&
+      requiresLifetimeChecks(MF)) {
     Optional<Register> FPRegOpt;
     if (hasFP(MF))
       FPRegOpt = FPReg;
@@ -591,7 +610,8 @@ void RISCVFrameLowering::emitEpilogue(MachineFunction &MF,
   // Deallocate stack
   adjustReg(MBB, MBBI, DL, SPReg, SPReg, StackSize, MachineInstr::FrameDestroy);
 
-  if (RISCVStackTemporalSafety::stackTemporalSafetyMitigationsEnabled()) {
+  if (RISCVStackTemporalSafety::stackTemporalSafetyMitigationsEnabled() &&
+      requiresLifetimeChecks(MF)) {
     Optional<Register> FPRegOpt;
     if (hasFP(MF))
       FPRegOpt = FPReg;
