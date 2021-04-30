@@ -61,3 +61,9 @@ autoconf/autom4te.cache
 /clang/utils/analyzer/projects/*/PatchedSource
 /clang/utils/analyzer/projects/*/ScanBuildResults
 /clang/utils/analyzer/projects/*/RefScanBuildResults
+
+#=============================================================================#
+# Build directories
+#=============================================================================#
+llvm/cmake-build-debug
+

@@ -180,3 +180,8 @@ def int_cheri_bounded_stack_cap :
 def int_cheri_check_cap_store_cap :
   Intrinsic<[], [llvm_anyptr_ty, llvm_anyptr_ty, llvm_anyint_ty],
             [IntrNoMem, IntrWillReturn, IntrHasSideEffects]>;
+
+/// Reads from an implementation-specific location to determine at the end of a
+/// function call whether a revocation sweep for that stack frame is required.
+def int_cheri_determine_stack_frame_revocation_required :
+  Intrinsic<[llvm_i1_ty], [], [IntrWillReturn]>;

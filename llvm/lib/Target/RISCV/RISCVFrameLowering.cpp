@@ -22,16 +22,12 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/Function.h"
 #include "llvm/MC/MCDwarf.h"
 
 #include <string>
 
 using namespace llvm;
-
-namespace {
-const std::string FUNCTION_MAKES_NO_LIFETIME_CHECKS_METADATA =
-    "containsNoStackLifetimeChecks";
-}
 
 // Get the ID of the libcall used for spilling and restoring callee saved
 // registers. The ID is representative of the number of registers saved or
@@ -57,19 +53,32 @@ static int getLibCallID(const MachineFunction &MF,
   switch (MaxReg) {
   default:
     llvm_unreachable("Something has gone wrong!");
-  case /*s11*/ RISCV::X27: return 12;
-  case /*s10*/ RISCV::X26: return 11;
-  case /*s9*/  RISCV::X25: return 10;
-  case /*s8*/  RISCV::X24: return 9;
-  case /*s7*/  RISCV::X23: return 8;
-  case /*s6*/  RISCV::X22: return 7;
-  case /*s5*/  RISCV::X21: return 6;
-  case /*s4*/  RISCV::X20: return 5;
-  case /*s3*/  RISCV::X19: return 4;
-  case /*s2*/  RISCV::X18: return 3;
-  case /*s1*/  RISCV::X9:  return 2;
-  case /*s0*/  RISCV::X8:  return 1;
-  case /*ra*/  RISCV::X1:  return 0;
+  case /*s11*/ RISCV::X27:
+    return 12;
+  case /*s10*/ RISCV::X26:
+    return 11;
+  case /*s9*/ RISCV::X25:
+    return 10;
+  case /*s8*/ RISCV::X24:
+    return 9;
+  case /*s7*/ RISCV::X23:
+    return 8;
+  case /*s6*/ RISCV::X22:
+    return 7;
+  case /*s5*/ RISCV::X21:
+    return 6;
+  case /*s4*/ RISCV::X20:
+    return 5;
+  case /*s3*/ RISCV::X19:
+    return 4;
+  case /*s2*/ RISCV::X18:
+    return 3;
+  case /*s1*/ RISCV::X9:
+    return 2;
+  case /*s0*/ RISCV::X8:
+    return 1;
+  case /*ra*/ RISCV::X1:
+    return 0;
   }
 }
 
@@ -79,20 +88,10 @@ static const char *
 getSpillLibCallName(const MachineFunction &MF,
                     const std::vector<CalleeSavedInfo> &CSI) {
   static const char *const SpillLibCalls[] = {
-    "__riscv_save_0",
-    "__riscv_save_1",
-    "__riscv_save_2",
-    "__riscv_save_3",
-    "__riscv_save_4",
-    "__riscv_save_5",
-    "__riscv_save_6",
-    "__riscv_save_7",
-    "__riscv_save_8",
-    "__riscv_save_9",
-    "__riscv_save_10",
-    "__riscv_save_11",
-    "__riscv_save_12"
-  };
+      "__riscv_save_0", "__riscv_save_1", "__riscv_save_2",  "__riscv_save_3",
+      "__riscv_save_4", "__riscv_save_5", "__riscv_save_6",  "__riscv_save_7",
+      "__riscv_save_8", "__riscv_save_9", "__riscv_save_10", "__riscv_save_11",
+      "__riscv_save_12"};
 
   int LibCallID = getLibCallID(MF, CSI);
   if (LibCallID == -1)
@@ -106,20 +105,11 @@ static const char *
 getRestoreLibCallName(const MachineFunction &MF,
                       const std::vector<CalleeSavedInfo> &CSI) {
   static const char *const RestoreLibCalls[] = {
-    "__riscv_restore_0",
-    "__riscv_restore_1",
-    "__riscv_restore_2",
-    "__riscv_restore_3",
-    "__riscv_restore_4",
-    "__riscv_restore_5",
-    "__riscv_restore_6",
-    "__riscv_restore_7",
-    "__riscv_restore_8",
-    "__riscv_restore_9",
-    "__riscv_restore_10",
-    "__riscv_restore_11",
-    "__riscv_restore_12"
-  };
+      "__riscv_restore_0", "__riscv_restore_1",  "__riscv_restore_2",
+      "__riscv_restore_3", "__riscv_restore_4",  "__riscv_restore_5",
+      "__riscv_restore_6", "__riscv_restore_7",  "__riscv_restore_8",
+      "__riscv_restore_9", "__riscv_restore_10", "__riscv_restore_11",
+      "__riscv_restore_12"};
 
   int LibCallID = getLibCallID(MF, CSI);
   if (LibCallID == -1)
@@ -208,96 +198,126 @@ void RISCVFrameLowering::adjustReg(MachineBasicBlock &MBB,
   }
 }
 
-bool RISCVFrameLowering::requiresLifetimeChecks(MachineFunction &MF) const {
-  Function &F = MF.getFunction();
-  MDNode *analysis = F.getMetadata(FUNCTION_MAKES_NO_LIFETIME_CHECKS_METADATA);
-  if (analysis)
-    return dyn_cast<MDString>(analysis->getOperand(0))
-        ->getString()
-        .equals("true");
-  else
-    return false;
-}
-
-void RISCVFrameLowering::alignStackForTemporalSafety(
+void RISCVFrameLowering::emitCapDerivedLifetimesPrologue(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
-    const DebugLoc &DL, MachineRegisterInfo &MRI, const TargetInstrInfo *TII,
-    uint64_t StackFrameSize, Register SPReg, Optional<Register> FPReg) const {
+    const DebugLoc &DL, uint64_t StackFrameSize, Register SPReg,
+    Optional<Register> FPReg) const {
 
-  constexpr int64_t SPSlotSize = 16;
-  const int64_t FPSlotSize = FPReg ? 16 : 0;
+  MachineFunction *MF = MBB.getParent();
+  const RISCVInstrInfo *TII = STI.getInstrInfo();
+  MachineRegisterInfo &MRI = MF->getRegInfo();
+  const bool Escaping = MF->getFunction().possiblyContainsEscapingLocals();
 
-  const unsigned NumBitsAlignmentRequired =
-      RISCVFrameSizeBits::getNumBitsAlignmentRequired(StackFrameSize +
-                                                      SPSlotSize + FPSlotSize);
-  const uint64_t Mask = 0xffffffffffffffff << NumBitsAlignmentRequired;
+  if (Escaping) {
+    /**
+     * If the function contains (possibly-)escaping locals then we need to align
+     * its stack frame, and we need to set the stack frame size bits of the SP
+     * (and FP, if the function uses one).
+     *
+     * The alignment process loses information. We need to save the SP and
+     * possibly FP to the stack so that they can be restored again in the
+     * prologue.
+     */
+    constexpr int64_t SPSlotSize = 16;
+    const int64_t FPSlotSize = FPReg ? 16 : 0;
 
-  // Extract the current SP address
-  Register OriginalSPAddr = MRI.createVirtualRegister(&RISCV::GPRRegClass);
-  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CGetAddr), OriginalSPAddr)
-      .addReg(SPReg);
+    const unsigned NumBitsAlignmentRequired =
+        RISCVFrameSizeBits::getNumBitsAlignmentRequired(
+            StackFrameSize + SPSlotSize + FPSlotSize);
+    const uint64_t Mask = 0xffffffffffffffff << NumBitsAlignmentRequired;
 
-  // Align it downwards using the mask to obtain the new SP address
-  Register NewSPAddr = MRI.createVirtualRegister(&RISCV::GPRRegClass);
-  BuildMI(MBB, MBBI, DL, TII->get(RISCV::ANDI), NewSPAddr)
-      .addReg(OriginalSPAddr, RegState::Kill)
-      .addImm(Mask);
+    // Extract the current SP address
+    Register OriginalSPAddr = MRI.createVirtualRegister(&RISCV::GPRRegClass);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CGetAddr), OriginalSPAddr)
+        .addReg(SPReg);
 
-  // Reserve space to store the original stack pointer on the stack
-  BuildMI(MBB, MBBI, DL, TII->get(RISCV::ADDI), NewSPAddr)
-      .addReg(NewSPAddr)
-      .addImm(-(SPSlotSize + FPSlotSize));
+    // Align it downwards using the mask to obtain the new SP address
+    Register NewSPAddr = MRI.createVirtualRegister(&RISCV::GPRRegClass);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::ANDI), NewSPAddr)
+        .addReg(OriginalSPAddr, RegState::Kill)
+        .addImm(Mask);
 
-  // Remember the original SP capability before we update it
-  Register OriginalCSP = MRI.createVirtualRegister(&RISCV::GPCRRegClass);
-  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CMove), OriginalCSP).addReg(SPReg);
+    // Reserve space to store the original stack pointer on the stack
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::ADDI), NewSPAddr)
+        .addReg(NewSPAddr)
+        .addImm(-(SPSlotSize + FPSlotSize));
 
-  // Update the stack pointer to its new aligned location
-  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetAddr), SPReg)
-      .addReg(SPReg)
-      .addReg(NewSPAddr, RegState::Kill);
+    // Remember the original SP capability before we update it
+    Register OriginalCSP = MRI.createVirtualRegister(&RISCV::GPCRRegClass);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CMove), OriginalCSP).addReg(SPReg);
 
-  // Save the old stack pointer in the slot we reserved
-  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
-      .addReg(OriginalCSP, RegState::Kill)
-      .addReg(SPReg)
-      .addImm(SPSlotSize);
+    // Update the stack pointer to its new aligned location
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetAddr), SPReg)
+        .addReg(SPReg)
+        .addReg(NewSPAddr, RegState::Kill);
 
-  // Save the old frame pointer in the slot we reserved
-  if (FPReg)
+    // Save the old stack pointer in the slot we reserved
     BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
-        .addReg(*FPReg)
+        .addReg(OriginalCSP, RegState::Kill)
         .addReg(SPReg)
-        .addImm(SPSlotSize + FPSlotSize);
+        .addImm(SPSlotSize);
 
-  // Set stack pointer stack frame size bits
-  const unsigned FrameSizeBits =
-      RISCVFrameSizeBits::getFrameSizeBits(StackFrameSize);
-  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetStackFrameSizeImm), SPReg)
-      .addReg(SPReg)
-      .addImm(FrameSizeBits);
+    // Save the old frame pointer in the slot we reserved
+    if (FPReg)
+      BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
+          .addReg(*FPReg)
+          .addReg(SPReg)
+          .addImm(SPSlotSize + FPSlotSize);
+
+    // Set stack pointer stack frame size bits
+    const unsigned FrameSizeBits =
+        RISCVFrameSizeBits::getFrameSizeBits(StackFrameSize);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetStackFrameSizeImm), SPReg)
+        .addReg(SPReg)
+        .addImm(FrameSizeBits);
+  } else {
+    /**
+     * If the function doesn't contain any escaping locals then we don't need to
+     * align the stack frame. We do, however, still need to zero the stack frame
+     * size bits of the SP and possibly FP, because we want to disable lifetime
+     * checks for all locals of this function.
+     */
+    constexpr unsigned IgnoreLifetimeChecksVal = 0;
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetStackFrameSizeImm), SPReg)
+        .addReg(SPReg)
+        .addImm(IgnoreLifetimeChecksVal);
+    if (FPReg)
+      BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetStackFrameSizeImm), *FPReg)
+          .addReg(*FPReg)
+          .addImm(IgnoreLifetimeChecksVal);
+  }
 }
 
-void RISCVFrameLowering::undoAlignStackForTemporalSafety(
+void RISCVFrameLowering::emitCapDerivedLifetimesEpilogue(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
-    const DebugLoc &DL, MachineRegisterInfo &MRI, const TargetInstrInfo *TII,
-    Register SPReg, Optional<Register> FPReg) const {
-  constexpr int64_t SPSlotOffset = 16;
-  constexpr int64_t FPSlotOffset = 32;
+    const DebugLoc &DL, Register SPReg, Optional<Register> FPReg) const {
 
-  // Restore the FP register that we saved to the stack (if we are using one)
-  // (Remember to do this before restoring the old stack pointer!)
-  if (FPReg)
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CLC_128), *FPReg)
+  MachineFunction *MF = MBB.getParent();
+  const RISCVInstrInfo *TII = STI.getInstrInfo();
+  const bool Escaping = MF->getFunction().possiblyContainsEscapingLocals();
+
+  /**
+   * The CheriInsertLifetimeChecks pass handles inserting calls to caprevoke(),
+   * so we don't need to worry about that here. However, we do need to make sure
+   * the stack and (if present) frame pointers are restored following our
+   * alignment in the prologue.
+   */
+  if (Escaping) {
+    constexpr int64_t SPSlotOffset = 16;
+    constexpr int64_t FPSlotOffset = 32;
+
+    // Restore the FP register that we saved to the stack (if we are using one)
+    // (This MUST be done before restoring the old stack pointer!)
+    if (FPReg)
+      BuildMI(MBB, MBBI, DL, TII->get(RISCV::CLC_128), *FPReg)
+          .addReg(SPReg)
+          .addImm(FPSlotOffset);
+
+    // Restore the old stack pointer that we saved to the stack
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CLC_128), SPReg)
         .addReg(SPReg)
-        .addImm(FPSlotOffset);
-
-  // Restore the old stack pointer that we saved to the stack
-  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CLC_128), SPReg)
-      .addReg(SPReg)
-      .addImm(SPSlotOffset);
-
-  // TODO: Think about whether I need to clear their tags in memory
+        .addImm(SPSlotOffset);
+  }
 }
 
 // Returns the register used to hold the frame pointer.
@@ -329,11 +349,11 @@ getNonLibcallCSI(const std::vector<CalleeSavedInfo> &CSI) {
 
 void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
                                       MachineBasicBlock &MBB) const {
+  Function &F = MF.getFunction();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   auto *RVFI = MF.getInfo<RISCVMachineFunctionInfo>();
   const RISCVRegisterInfo *RI = STI.getRegisterInfo();
   const RISCVInstrInfo *TII = STI.getInstrInfo();
-  MachineRegisterInfo &MRI = MF.getRegInfo();
   MachineBasicBlock::iterator MBBI = MBB.begin();
 
   Register FPReg = getFPReg();
@@ -400,13 +420,14 @@ void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
   }
 
   // Shift the stack pointer to ensure alignment
-  if (RISCVStackTemporalSafety::stackTemporalSafetyMitigationsEnabled() &&
-      requiresLifetimeChecks(MF)) {
-    Optional<Register> FPRegOpt;
-    if (hasFP(MF))
-      FPRegOpt = FPReg;
-    alignStackForTemporalSafety(MBB, MBBI, DL, MRI, TII, RealStackSize, SPReg,
-                                FPRegOpt);
+  if (RISCVStackTemporalSafety::stackTemporalSafetyMitigationsEnabled()) {
+    if (F.possiblyContainsEscapingLocals()) {
+      Optional<Register> FPRegOpt;
+      if (hasFP(MF))
+        FPRegOpt = FPReg;
+      emitCapDerivedLifetimesPrologue(MBB, MBBI, DL, RealStackSize, SPReg,
+                                      FPRegOpt);
+    }
   }
 
   // Allocate space on the stack if necessary.
@@ -436,7 +457,7 @@ void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
     // Offsets for objects with fixed locations (IE: those saved by libcall) are
     // simply calculated from the frame index.
     if (FrameIdx < 0)
-      Offset = FrameIdx * (int64_t) STI.getXLen() / 8;
+      Offset = FrameIdx * (int64_t)STI.getXLen() / 8;
     else
       Offset = MFI.getObjectOffset(Entry.getFrameIdx()) -
                RVFI->getLibCallStackSize();
@@ -529,8 +550,7 @@ void RISCVFrameLowering::emitPrologue(MachineFunction &MF,
       if (hasBP(MF)) {
         // move BP, SP
         if (RISCVABI::isCheriPureCapABI(STI.getTargetABI()))
-          BuildMI(MBB, MBBI, DL, TII->get(RISCV::CMove), BPReg)
-              .addReg(SPReg);
+          BuildMI(MBB, MBBI, DL, TII->get(RISCV::CMove), BPReg).addReg(SPReg);
         else
           BuildMI(MBB, MBBI, DL, TII->get(RISCV::ADDI), BPReg)
               .addReg(SPReg)
@@ -545,8 +565,6 @@ void RISCVFrameLowering::emitEpilogue(MachineFunction &MF,
   const RISCVRegisterInfo *RI = STI.getRegisterInfo();
   MachineFrameInfo &MFI = MF.getFrameInfo();
   auto *RVFI = MF.getInfo<RISCVMachineFunctionInfo>();
-  const RISCVInstrInfo *TII = STI.getInstrInfo();
-  MachineRegisterInfo &MRI = MF.getRegInfo();
   Register FPReg = getFPReg();
   Register SPReg = getSPReg();
 
@@ -560,8 +578,8 @@ void RISCVFrameLowering::emitEpilogue(MachineFunction &MF,
       MBBI = MBB.getLastNonDebugInstr();
     DL = MBBI->getDebugLoc();
 
-    // If this is not a terminator, the actual insert location should be after the
-    // last instruction.
+    // If this is not a terminator, the actual insert location should be after
+    // the last instruction.
     if (!MBBI->isTerminator())
       MBBI = std::next(MBBI);
 
@@ -610,12 +628,11 @@ void RISCVFrameLowering::emitEpilogue(MachineFunction &MF,
   // Deallocate stack
   adjustReg(MBB, MBBI, DL, SPReg, SPReg, StackSize, MachineInstr::FrameDestroy);
 
-  if (RISCVStackTemporalSafety::stackTemporalSafetyMitigationsEnabled() &&
-      requiresLifetimeChecks(MF)) {
+  if (RISCVStackTemporalSafety::stackTemporalSafetyMitigationsEnabled()) {
     Optional<Register> FPRegOpt;
     if (hasFP(MF))
       FPRegOpt = FPReg;
-    undoAlignStackForTemporalSafety(MBB, MBBI, DL, MRI, TII, SPReg, FPReg);
+    emitCapDerivedLifetimesEpilogue(MBB, MBBI, DL, SPReg, FPReg);
   }
 }
 
@@ -702,18 +719,20 @@ void RISCVFrameLowering::determineCalleeSaves(MachineFunction &MF,
 
   if (MF.getFunction().hasFnAttribute("interrupt") && MFI.hasCalls()) {
 
-    static const MCPhysReg CSGPRs[] = { RISCV::X1,      /* ra */
-      RISCV::X5, RISCV::X6, RISCV::X7,                  /* t0-t2 */
-      RISCV::X10, RISCV::X11,                           /* a0-a1, a2-a7 */
-      RISCV::X12, RISCV::X13, RISCV::X14, RISCV::X15, RISCV::X16, RISCV::X17,
-      RISCV::X28, RISCV::X29, RISCV::X30, RISCV::X31, 0 /* t3-t6 */
+    static const MCPhysReg CSGPRs[] = {
+        RISCV::X1,                         /* ra */
+        RISCV::X5,  RISCV::X6,  RISCV::X7, /* t0-t2 */
+        RISCV::X10, RISCV::X11,            /* a0-a1, a2-a7 */
+        RISCV::X12, RISCV::X13, RISCV::X14, RISCV::X15, RISCV::X16, RISCV::X17,
+        RISCV::X28, RISCV::X29, RISCV::X30, RISCV::X31, 0 /* t3-t6 */
     };
 
-    static const MCPhysReg CSGPCRs[] = { RISCV::C1,     /* cra */
-      RISCV::C5, RISCV::C6, RISCV::C7,                  /* ct0-ct2 */
-      RISCV::C10, RISCV::C11,                           /* ca0-ca1, ca2-ca7 */
-      RISCV::C12, RISCV::C13, RISCV::C14, RISCV::C15, RISCV::C16, RISCV::C17,
-      RISCV::C28, RISCV::C29, RISCV::C30, RISCV::C31, 0 /* ct3-ct6 */
+    static const MCPhysReg CSGPCRs[] = {
+        RISCV::C1,                         /* cra */
+        RISCV::C5,  RISCV::C6,  RISCV::C7, /* ct0-ct2 */
+        RISCV::C10, RISCV::C11,            /* ca0-ca1, ca2-ca7 */
+        RISCV::C12, RISCV::C13, RISCV::C14, RISCV::C15, RISCV::C16, RISCV::C17,
+        RISCV::C28, RISCV::C29, RISCV::C30, RISCV::C31, 0 /* ct3-ct6 */
     };
 
     ArrayRef<MCPhysReg> CSRegs;
@@ -729,7 +748,7 @@ void RISCVFrameLowering::determineCalleeSaves(MachineFunction &MF,
         MF.getSubtarget<RISCVSubtarget>().hasStdExtF()) {
 
       // If interrupt is enabled, this list contains all FP registers.
-      const MCPhysReg * Regs = MF.getRegInfo().getCalleeSavedRegs();
+      const MCPhysReg *Regs = MF.getRegInfo().getCalleeSavedRegs();
 
       for (unsigned i = 0; Regs[i]; ++i)
         if (RISCV::FPR32RegClass.contains(Regs[i]) ||
@@ -778,7 +797,7 @@ MachineBasicBlock::iterator RISCVFrameLowering::eliminateCallFramePseudoInstr(
 
   assert((Opcode == RISCV::ADJCALLSTACKDOWNCAP ||
           Opcode == RISCV::ADJCALLSTACKUPCAP) ==
-         RISCVABI::isCheriPureCapABI(STI.getTargetABI()) &&
+             RISCVABI::isCheriPureCapABI(STI.getTargetABI()) &&
          "Should use capability adjustments if and only if ABI is purecap");
 
   if (!hasReservedCallFrame(MF)) {

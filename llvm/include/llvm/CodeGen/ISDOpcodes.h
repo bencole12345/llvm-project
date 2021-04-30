@@ -1113,6 +1113,9 @@ enum NodeType {
   VECREDUCE_UMAX,
   VECREDUCE_UMIN,
 
+  /// Corresponds to the cheri.determine.stack.frame.revocation.required
+  CHERI_DETERMINE_STACK_FRAME_REVOCATION_REQUIRED,
+
   /// BUILTIN_OP_END - This must be the last enum value in this list.
   /// The target-specific pre-isel opcode values start here.
   BUILTIN_OP_END

@@ -36,6 +36,9 @@ def riscv_cap_subset_test : SDNode<"RISCVISD::CAP_SUBSET_TEST",
                                    SDT_RISCVCheriBoolBinary>;
 def riscv_cap_equal_exact : SDNode<"RISCVISD::CAP_EQUAL_EXACT",
                                    SDT_RISCVCheriBoolBinary>;
+def riscv_determine_stack_frame_revocation_required :
+                            SDNode<"RISCVISD::DETERMINE_STACK_FRAME_REVOCATION_REQUIRED",
+                                   SDT_RISCVCheriBoolUnary>;
 
 //===----------------------------------------------------------------------===//
 // Operand and SDNode transformation definitions.
@@ -716,6 +719,8 @@ def : InstAlias<"csd $rs2, (${rs1})",
 let Predicates = [HasCheri, IsCapMode] in {
 def : Pat<(int_cheri_check_cap_store_cap GPCR:$rs1, GPCR:$rs2, simm12:$imm12),
           (CCSC_128 GPCR:$rs1, GPCR:$rs2, simm12:$imm12)>;
+def : Pat<(int_cheri_determine_stack_frame_revocation_required GPR:$rs),
+          ()
 }
 
 /// 'A' (Atomic Instructions) extension

@@ -196,6 +196,8 @@
 
 using namespace llvm;
 
+// TODO: Add my pass to this file as well?
+
 static cl::opt<unsigned> MaxDevirtIterations("pm-max-devirt-iterations",
                                              cl::ReallyHidden, cl::init(4));
 static cl::opt<bool>

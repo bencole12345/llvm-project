@@ -504,7 +504,10 @@ SDValue RISCVTargetLowering::LowerOperation(SDValue Op,
   }
   case ISD::INTRINSIC_WO_CHAIN:
     return LowerINTRINSIC_WO_CHAIN(Op, DAG);
+  case ISD::CHERI_DETERMINE_STACK_FRAME_REVOCATION_REQUIRED:
+    return LowerCHERI_DETERMINE_STACK_FRAME_REVOCATION_REQUIRED(Op, DAG);
   }
+
 }
 
 static SDValue getTargetNode(GlobalAddressSDNode *N, SDLoc DL, EVT Ty,
@@ -1198,6 +1201,9 @@ SDValue RISCVTargetLowering::PerformDAGCombine(SDNode *N,
       if (Known.isConstant())
         return DAG.getConstant(Known.One, DL, N->getValueType(0));
       break;
+    }
+    case Intrinsic::cheri_determine_stack_frame_revocation_required: {
+      return DAG.getNode(RISCVISD::DETERMINE_STACK_FRAME_REVOCATION_REQUIRED, DL, XLenVT);
     }
     }
 
