@@ -946,7 +946,7 @@ void RISCVFrameLowering::emitCapDerivedLifetimesPrologue(
           .addImm(SPSlotSize + FPSlotSize);
 
     // Set stack pointer stack frame size bits
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetStackFrameSizeImm), SPReg)
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSFS), SPReg)
         .addReg(SPReg)
         .addImm(FrameSizeBits);
   } else {
@@ -981,10 +981,9 @@ void RISCVFrameLowering::emitCapDerivedLifetimesPrologue(
         .addImm(-(SPSlotSize + FPSlotSize));
 
     // Set the stack pointer's lifetime bits
-    constexpr unsigned IgnoreLifetimeChecksVal = 0;
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetStackFrameSizeImm), SPReg)
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSFS), SPReg)
         .addReg(SPReg)
-        .addImm(IgnoreLifetimeChecksVal);
+        .addImm(FrameSizeBits);
   }
 }
 
