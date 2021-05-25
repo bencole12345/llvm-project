@@ -178,9 +178,19 @@ def int_cheri_bounded_stack_cap :
 // Stack temporal safety functions
 ////////////////////////////////////////////////////////////////////////////////
 
-/// This intrinsic checks the arguments to a csc (cap store cap) instruction
-/// and raises an exception if the arguments are incorrectly aligned.
-/// TODO: Use the right offset type
+/// Checks the arguments to a csc (cap store cap) instruction and raises a
+/// StackLifetimeViolation exception the argument lifetimes are invalid.
 def int_cheri_check_cap_store_cap :
   Intrinsic<[], [llvm_anyptr_ty, llvm_anyptr_ty, llvm_anyint_ty],
             [IntrNoMem, IntrWillReturn, IntrHasSideEffects]>;
+
+def int_cheri_cap_get_frame_size :
+  Intrinsic<[llvm_anyint_ty], [llvm_anyptr_ty], [IntrNoMem, IntrWillReturn]>;
+
+def int_cheri_cap_set_frame_size :
+  Intrinsic<[llvm_anyptr_ty],
+            [llvm_anyptr_ty, llvm_anyint_ty],
+            [IntrNoMem, IntrWillReturn]>;
+
+def int_cheri_cap_get_frame_base :
+  Intrinsic<[llvm_anyptr_ty], [llvm_anyptr_ty], [IntrNoMem, IntrWillReturn]>;

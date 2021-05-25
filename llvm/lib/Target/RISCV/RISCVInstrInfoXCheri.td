@@ -281,6 +281,7 @@ let defsCanBeSealed = 1 in
 def CCSeal          : Cheri_rr<0x1f, "ccseal", GPCR, GPCR>;
 let defsCanBeSealed = 1 in
 def CSealEntry      : Cheri_r<0x11, "csealentry", GPCR>;
+def CGetFrameBase   : Cheri_r<0x14, "cgetframebase", GPCR>;
 } // let mayTrap = 1
 
 def : InstAlias<"cincoffsetimm $cd, $cs1, $imm",
@@ -875,6 +876,7 @@ def : PatGpcr<int_cheri_cap_offset_get, CGetOffset>;
 def : PatGpcr<int_cheri_cap_flags_get, CGetFlags>;
 def : PatGpcr<int_cheri_cap_address_get, CGetAddr>;
 def : PatGpcr<int_cheri_cap_stack_frame_size_get, CGFS>;
+def : PatGpcr<int_cheri_cap_get_frame_base, CGetFrameBase>;
 
 /// Capability-Modification Instructions
 
