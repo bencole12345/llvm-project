@@ -477,8 +477,9 @@ namespace llvm {
   /// Create CHERI pass to bound alloca.s
   ModulePass *createCheriBoundAllocasPass();
 
-  /// Create a CHERI pass to insert stack temporal safety lifetime checks
-  ModulePass *createCheriInsertLifetimeChecksPass();
+  /// Create a CHERI pass to insert stack temporal safety lifetime checks and
+  /// revocation sweeps
+  ModulePass *createCheriCapDerivedLifetimesPass();
 
   /// Create IR Type Promotion pass. \see TypePromotion.cpp
   FunctionPass *createTypePromotionPass();

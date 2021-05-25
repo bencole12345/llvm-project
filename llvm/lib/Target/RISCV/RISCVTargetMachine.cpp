@@ -161,7 +161,7 @@ void RISCVPassConfig::addIRPasses() {
   addPass(createAtomicExpandPass());
   addPass(createCheriBoundAllocasPass());
   if (RISCVStackTemporalSafety::stackTemporalSafetyMitigationsEnabled())
-    addPass(createCheriInsertLifetimeChecksPass());
+    addPass(createCheriCapDerivedLifetimesPass());
   TargetPassConfig::addIRPasses();
 }
 
