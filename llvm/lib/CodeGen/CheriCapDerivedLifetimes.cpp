@@ -1,6 +1,9 @@
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/IR/Argument.h"
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalValue.h"
@@ -11,6 +14,8 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/IR/RevocationStrategy.h"
+#include "llvm/IR/Use.h"
 #include "llvm/IR/Value.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
@@ -27,7 +32,12 @@
 #define DEBUG_TYPE "cheri-cap-derived-lifetimes"
 #define PASS_NAME "CHERI use capability-derived lifetimes"
 
+// Must be kept in sync with CheriBSD's defines in sys/sys/caprevoke.h.
+#define CAPREVOKE_STACK_JUST_THIS_FRAME 0x00
+#define CAPREVOKE_STACK_TO_STACK_END 0x01
+
 using namespace llvm;
+using namespace llvm::cheri;
 
 namespace {
 
@@ -44,25 +54,6 @@ cl::opt<bool> UnconditionalRevocationAfterAllEscapingFunctions(
     cl::init(false));
 
 /**
- * Denotes the conditions under which a function will need a revocation sweep
- * before it returns.
- */
-enum class RevocationStrategy {
-
-  /// No revocation required, this function is definitely safe.
-  NoRevocation,
-
-  /// This function includes lifetime checks, so we should test before any
-  /// terminator whether any a StackLifetimeViolation exception happened and
-  /// revoke if any did.
-  ConditionalRevocation,
-
-  /// This function should unconditionally have a revocation sweep before it
-  /// terminates.
-  UnconditionalRevocation
-};
-
-/**
  * Inserts lifetime checks to ensure temporal stack safety.
  */
 class CheriCapDerivedLifetimes : public ModulePass {
@@ -75,19 +66,17 @@ public:
   CheriCapDerivedLifetimes();
   StringRef getPassName() const override;
   bool runOnModule(Module &Mod) override;
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<LoopInfoWrapperPass>();
+  }
 
 private:
   /// Find the caprevoke_shadow() and caprevoke_stack() syscalls and set up the
   /// pointers to them.
   void initialiseCaprevokeFunctions(Module *M);
 
-  /// Set up the global variable to store a capability to the relevant portion
-  /// of the shadow stack.
-  GlobalVariable *getShadowStackGlobalPtr(Module *M) const;
-
   /// Run the pass on a function.
-  bool runOnFunction(Function &F, Module *M,
-                     GlobalVariable *ShadowStackPtr) const;
+  bool runOnFunction(Function &F, Module *M, const LoopInfo &LI) const;
 
   /// Inserts lifetime check instructions before all pointer-type stores.
   bool insertLifetimeChecks(Function &F, Module *M) const;
@@ -96,37 +85,53 @@ private:
   /// instruction.
   void insertLifetimeCheckBefore(StoreInst &I, Module *M) const;
 
-  /// Insert a call to caprevoke_shadow() to set up the global variable
-  /// corresponding to the stack's portion of the shadow map.
-  void insertCaprevokeInitialisation(Function &F, Module *M,
-                                     GlobalVariable *ShadowStackPtr) const;
+  /// Determines the revocation strategy to be used for the function.
+  RevocationStrategy determineRevocationStrategy(Function &F, Module *M,
+                                                 const LoopInfo &LI) const;
 
   /// Inserts a conditional revocation call before all terminators in the
   /// function.
-  void insertConditionalRevocation(Function &F, Module *M,
-                                   GlobalVariable *ShadowStackPtr) const;
+  void insertConditionalRevocation(Function &F, Module *M) const;
 
   /// Inserts an unconditional revocation call before all terminators in the
   /// function.
-  void insertUnconditionalRevocation(Function &F, Module *M,
-                                     GlobalVariable *ShadowStackPtr) const;
+  void insertUnconditionalRevocation(Function &F, Module *M) const;
 
   /// Determines whether a basic block terminates with a return statement.
   bool blockIsReturnBlock(const BasicBlock &BB) const;
 
-  /// Insert a call to caprevoke_stack() using the supplied IRBuilder.
-  void insertRevocationCall(IRBuilder<> &Builder, LLVMContext &Context,
-                            GlobalVariable *ShadowStackPtr) const;
+  /// Insert a revocation call to revoke everything in the current stack frame.
+  void insertFrameRevocation(IRBuilder<> &Builder, Module *M) const;
+
+  /// Insert a revocation call to revoke everything between the current frame
+  /// pointer and the end of the stack.
+  void insertRevocationToEndOfStack(IRBuilder<> &Builder, Module *M) const;
 
   /// Inserts code to perform a revocation sweep before the given Instruction.
-  void insertTestAndRevokeBefore(Instruction &I, Module *M,
-                                 GlobalVariable *ShadowStackPtr) const;
-
-  /// Determines the revocation strategy for a function.
-  RevocationStrategy getFunctionRevocationStrategy(const Function &F) const;
+  void insertTestAndRevokeBefore(Instruction &I, Module *M) const;
 
   /// Returns the frame pointer for the current function.
-  Value *getFramePointer(LLVMContext &Context, IRBuilder<> &Builder) const;
+  Value *getFramePointer(LLVMContext &Context, IRBuilder<> &Builder,
+                         Type *DesiredType) const;
+
+  /// Determines whether the function has any properties that make it
+  /// incompatible with the capability-derived lifetimes scheme. Functions that
+  /// are larger than 4 KiB, contain dynamically-sized stack allocations, or use
+  /// address-taken parameters, are currently incompatible.
+  bool functionIncompatibleWithCDL(Function &F, const Module *M,
+                                   const LoopInfo &LI) const;
+
+  /// Estimates the frame size of a function. If there is any uncertainty, this
+  /// will always overestimate.
+  unsigned estimateStaticFrameSize(Function &F, const DataLayout &DL) const;
+
+  /// Determines whether a function contains any dynamically-sized stack
+  /// allocations.
+  bool containsDynamicStackAllocation(Function &F, const LoopInfo &LI) const;
+
+  /// Determines whether any of the parameters to the function are
+  /// address-taken.
+  bool containsAddressTakenParameter(Function &F) const;
 };
 
 } // anonymous namespace
@@ -139,57 +144,51 @@ StringRef CheriCapDerivedLifetimes::getPassName() const { return PASS_NAME; }
 
 bool CheriCapDerivedLifetimes::runOnModule(Module &Mod) {
   initialiseCaprevokeFunctions(&Mod);
-  GlobalVariable *ShadowStackPtr = getShadowStackGlobalPtr(&Mod);
-
-  // Run on each function
   bool modified = false;
   for (Function &F : Mod) {
-    modified |= runOnFunction(F, &Mod, ShadowStackPtr);
+    if (F.isIntrinsic() || F.empty())
+      continue;
+    LoopInfo &LI = getAnalysis<LoopInfoWrapperPass>(F).getLoopInfo();
+    modified |= runOnFunction(F, &Mod, LI);
   }
   return modified;
 }
 
 void CheriCapDerivedLifetimes::initialiseCaprevokeFunctions(Module *M) {
   LLVMContext &Context = M->getContext();
+  DataLayout DL(M);
   Type *VoidTy = Type::getVoidTy(Context);
-  Type *CharPtrTy = IntegerType::getInt8PtrTy(Context);
+  Type *CharPtrTy =
+      IntegerType::getInt8PtrTy(Context, DL.getProgramAddressSpace());
+  Type *IntTy = IntegerType::getInt32Ty(Context);
+
   CaprevokeShadowFunction =
-      M->getOrInsertFunction("caprevoke_shadow", VoidTy, CharPtrTy);
-  CaprevokeStackFunction =
-      M->getOrInsertFunction("caprevoke_stack", VoidTy, CharPtrTy, CharPtrTy);
+      M->getOrInsertFunction("caprevoke_shadow", CharPtrTy, CharPtrTy);
+  CaprevokeStackFunction = M->getOrInsertFunction("caprevoke_stack", VoidTy,
+                                                  CharPtrTy, CharPtrTy, IntTy);
 }
 
-GlobalVariable *
-CheriCapDerivedLifetimes::getShadowStackGlobalPtr(Module *M) const {
-  LLVMContext &Context = M->getContext();
-  Type *CharPtrTy = IntegerType::getInt8PtrTy(Context);
-  return (GlobalVariable *)M->getOrInsertGlobal(SHADOW_STACK_CAP_GLOBAL_NAME,
-                                                CharPtrTy);
-}
-
-bool CheriCapDerivedLifetimes::runOnFunction(
-    Function &F, Module *M, GlobalVariable *ShadowStackPtr) const {
+bool CheriCapDerivedLifetimes::runOnFunction(Function &F, Module *M,
+                                             const LoopInfo &LI) const {
   bool Changed = false;
-
-  if (F.getName().equals("main")) {
-    insertCaprevokeInitialisation(F, M, ShadowStackPtr);
-    Changed = true;
-  }
 
   // Insert CCSC instructions
   Changed |= insertLifetimeChecks(F, M);
 
-  // Insert revocation calls at terminators
-  switch (getFunctionRevocationStrategy(F)) {
+  // Determine which revocation strategy to use and insert revocation calls
+  // where appropriate
+  RevocationStrategy RevStrategy = determineRevocationStrategy(F, M, LI);
+  setFunctionRevocationStrategy(F, RevStrategy);
+  switch (RevStrategy) {
   case RevocationStrategy::NoRevocation:
     break;
   case RevocationStrategy::ConditionalRevocation:
+    insertConditionalRevocation(F, M);
     Changed = true;
-    insertConditionalRevocation(F, M, ShadowStackPtr);
     break;
   case RevocationStrategy::UnconditionalRevocation:
+    insertUnconditionalRevocation(F, M);
     Changed = true;
-    insertUnconditionalRevocation(F, M, ShadowStackPtr);
   }
 
   return Changed;
@@ -200,13 +199,14 @@ bool CheriCapDerivedLifetimes::insertLifetimeChecks(Function &F,
   bool ContainsChecks = false;
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
+
+      // We only want to check pointer-type stores
       if (I.getOpcode() != Instruction::Store || !isa<StoreInst>(I))
         continue;
       auto &Store = cast<StoreInst>(I);
       if (!Store.getValueOperand()->getType()->isPointerTy())
         continue;
 
-      // Now we're definitely looking at a pointer-type store
       insertLifetimeCheckBefore(Store, M);
       ContainsChecks = true;
     }
@@ -222,7 +222,6 @@ void CheriCapDerivedLifetimes::insertLifetimeCheckBefore(StoreInst &I,
   DataLayout DL(M);
 
   // Address spaces of the cap used to store and the cap being stored
-  // unsigned PointerAS = getLoadStoreAddressSpace(&I);
   unsigned ValueAS = I.getValueOperand()->getType()->getPointerAddressSpace();
 
   // Types of the pointers and offsets
@@ -238,21 +237,26 @@ void CheriCapDerivedLifetimes::insertLifetimeCheckBefore(StoreInst &I,
                            ConstantInt::get(SizeTy, 0)});
 }
 
-void CheriCapDerivedLifetimes::insertCaprevokeInitialisation(
-    Function &F, Module *M, GlobalVariable *ShadowStackPtr) const {
-  LLVMContext &Context = M->getContext();
+RevocationStrategy CheriCapDerivedLifetimes::determineRevocationStrategy(
+    Function &F, Module *M, const LoopInfo &LI) const {
 
-  BasicBlock &EntryBlock = F.getEntryBlock();
-  Instruction &FirstInstruction = EntryBlock.front();
+  bool UnconditionalRevocationRequired =
+      UnconditionalRevocationAfterAllFunctions ||
+      (UnconditionalRevocationAfterAllEscapingFunctions &&
+       F.containsPossiblyEscapingLocals()) ||
+      functionIncompatibleWithCDL(F, M, LI);
 
-  IRBuilder<> Builder(&FirstInstruction);
-  Value *FramePointer = getFramePointer(Context, Builder);
-  CallInst *Call = Builder.CreateCall(CaprevokeShadowFunction, {FramePointer});
-  Builder.CreateStore(Call, ShadowStackPtr);
+  if (UnconditionalRevocationRequired) {
+    return RevocationStrategy::UnconditionalRevocation;
+  } else if (F.containsPossiblyEscapingLocals()) {
+    return RevocationStrategy::ConditionalRevocation;
+  } else {
+    return RevocationStrategy::NoRevocation;
+  }
 }
 
-void CheriCapDerivedLifetimes::insertConditionalRevocation(
-    Function &F, Module *M, GlobalVariable *ShadowStackPtr) const {
+void CheriCapDerivedLifetimes::insertConditionalRevocation(Function &F,
+                                                           Module *M) const {
   /*
    * Inserting a revocation call requires splitting a basic block into
    * instructions before the return statement, and a new block containing just
@@ -267,16 +271,13 @@ void CheriCapDerivedLifetimes::insertConditionalRevocation(
   assert(!TerminatingBlocks.empty());
   for (BasicBlock *BB : TerminatingBlocks) {
     auto &ReturnStatement = BB->back();
-    insertTestAndRevokeBefore(ReturnStatement, M, ShadowStackPtr);
+    insertTestAndRevokeBefore(ReturnStatement, M);
   }
 }
 
-void CheriCapDerivedLifetimes::insertUnconditionalRevocation(
-    Function &F, Module *M, GlobalVariable *ShadowStackPtr) const {
+void CheriCapDerivedLifetimes::insertUnconditionalRevocation(Function &F,
+                                                             Module *M) const {
   // See insertConditionalRevocation for explanation of double loop
-
-  LLVMContext &Context = M->getContext();
-
   SmallVector<BasicBlock *, 16> TerminatingBlocks;
   for (BasicBlock &BB : F) {
     if (blockIsReturnBlock(BB))
@@ -286,7 +287,7 @@ void CheriCapDerivedLifetimes::insertUnconditionalRevocation(
   for (BasicBlock *BB : TerminatingBlocks) {
     auto &ReturnStatement = BB->back();
     IRBuilder<> Builder(&ReturnStatement);
-    insertRevocationCall(Builder, Context, ShadowStackPtr);
+    insertRevocationToEndOfStack(Builder, M);
   }
 }
 
@@ -294,64 +295,154 @@ bool CheriCapDerivedLifetimes::blockIsReturnBlock(const BasicBlock &BB) const {
   return !BB.empty() && BB.back().getOpcode() == Instruction::Ret;
 }
 
-void CheriCapDerivedLifetimes::insertRevocationCall(
-    IRBuilder<> &Builder, LLVMContext &Context,
-    GlobalVariable *ShadowStackPtr) const {
-  Value *FramePointer = getFramePointer(Context, Builder);
-  Builder.CreateCall(CaprevokeStackFunction, {ShadowStackPtr, FramePointer});
+void CheriCapDerivedLifetimes::insertFrameRevocation(IRBuilder<> &Builder,
+                                                     Module *M) const {
+  LLVMContext &Context = M->getContext();
+  DataLayout DL(M);
+  Type *CharPtrTy =
+      IntegerType::getInt8PtrTy(Context, DL.getProgramAddressSpace());
+  Value *FramePointer = getFramePointer(Context, Builder, CharPtrTy);
+  Type *Int32Ty = IntegerType::getInt32Ty(Context);
+
+  Constant *Mode =
+      ConstantInt::get(Int32Ty, CAPREVOKE_STACK_JUST_THIS_FRAME, true);
+  CallInst *ShadowStackPtr =
+      Builder.CreateCall(CaprevokeShadowFunction, {FramePointer});
+  Builder.CreateCall(CaprevokeStackFunction,
+                     {ShadowStackPtr, FramePointer, Mode});
 }
 
-void CheriCapDerivedLifetimes::insertTestAndRevokeBefore(
-    Instruction &I, Module *M, GlobalVariable *ShadowStackPtr) const {
+void CheriCapDerivedLifetimes::insertRevocationToEndOfStack(
+    IRBuilder<> &Builder, Module *M) const {
   LLVMContext &Context = M->getContext();
+  DataLayout DL(M);
+  Type *CharPtrTy =
+      IntegerType::getInt32PtrTy(Context, DL.getProgramAddressSpace());
+  Value *FramePointer = getFramePointer(Context, Builder, CharPtrTy);
   Type *Int32Ty = IntegerType::getInt32Ty(Context);
-  const unsigned VoidPtrAS = Type::getVoidTy(Context)->getPointerAddressSpace();
-  Type *VoidPtrTy = Type::getVoidTy(Context)->getPointerTo(VoidPtrAS);
+
+  Constant *Mode =
+      ConstantInt::get(Int32Ty, CAPREVOKE_STACK_TO_STACK_END, true);
+  CallInst *ShadowStackPtr =
+      Builder.CreateCall(CaprevokeShadowFunction, {FramePointer});
+  Builder.CreateCall(CaprevokeStackFunction,
+                     {ShadowStackPtr, FramePointer, Mode});
+}
+
+void CheriCapDerivedLifetimes::insertTestAndRevokeBefore(Instruction &I,
+                                                         Module *M) const {
+  LLVMContext &Context = M->getContext();
+  DataLayout DL(M);
+  Type *Int32Ty = IntegerType::getInt32Ty(Context);
+  Type *Int32PtrTy =
+      IntegerType::getInt32PtrTy(Context, DL.getProgramAddressSpace());
   IRBuilder<> Builder(&I);
 
   // Get the frame address
-  Value *FramePointer = getFramePointer(Context, Builder);
-
-  // Read the slot at the start of this frame to determine whether revocation is
-  // required
+  Value *FramePointer = getFramePointer(Context, Builder, Int32PtrTy);
   Value *StartOfFrame =
       Builder.CreateIntrinsic(Intrinsic::cheri_cap_get_frame_base,
-                              {VoidPtrTy, VoidPtrTy}, {FramePointer});
-  Value *RevocationRequired =
+                              {Int32PtrTy, Int32PtrTy}, {FramePointer});
+
+  // Load the value stored there to determine whether revocation is required
+  Value *RevocationRequiredFlag =
       Builder.CreateLoad(Int32Ty, StartOfFrame, "revocationRequired");
+  Value *RevocationRequired = Builder.CreateICmpEQ(
+      RevocationRequiredFlag, ConstantInt::get(Int32Ty, 1));
 
   // Add a conditional revocation
   Instruction *NewTerminator =
       SplitBlockAndInsertIfThen(RevocationRequired, &I, false);
   Builder.SetInsertPoint(NewTerminator);
-  insertRevocationCall(Builder, Context, ShadowStackPtr);
-}
-
-RevocationStrategy CheriCapDerivedLifetimes::getFunctionRevocationStrategy(
-    const Function &F) const {
-  if (UnconditionalRevocationAfterAllFunctions)
-    return RevocationStrategy::UnconditionalRevocation;
-  if (UnconditionalRevocationAfterAllEscapingFunctions)
-    return F.containsPossiblyEscapingLocals()
-               ? RevocationStrategy::UnconditionalRevocation
-               : RevocationStrategy::NoRevocation;
-  if (F.containsPossiblyEscapingLocals())
-    return RevocationStrategy::ConditionalRevocation;
-  else
-    return RevocationStrategy::NoRevocation;
+  insertFrameRevocation(Builder, M);
 }
 
 Value *CheriCapDerivedLifetimes::getFramePointer(LLVMContext &Context,
-                                                 IRBuilder<> &Builder) const {
-  unsigned AS = Type::getVoidTy(Context)->getPointerAddressSpace();
-  Type *VoidPtrTy = Type::getVoidTy(Context)->getPointerTo(AS);
+                                                 IRBuilder<> &Builder,
+                                                 Type *DesiredType) const {
+  assert(DesiredType->isPointerTy());
+
   Type *Int32Ty = IntegerType::getInt32Ty(Context);
   Constant *Level = ConstantInt::get(Int32Ty, 0);
-  return Builder.CreateIntrinsic(Intrinsic::frameaddress, {VoidPtrTy}, {Level});
+  return Builder.CreateIntrinsic(Intrinsic::frameaddress, {DesiredType},
+                                 {Level});
+}
+
+bool CheriCapDerivedLifetimes::functionIncompatibleWithCDL(
+    Function &F, const Module *M, const LoopInfo &LI) const {
+  DataLayout DL(M);
+
+  bool FrameTooBig = estimateStaticFrameSize(F, DL) > 4192;
+  bool ContainsDynamicStackAllocation = containsDynamicStackAllocation(F, LI);
+  bool ContainsAddressTakenParameter = containsAddressTakenParameter(F);
+
+  return FrameTooBig || ContainsDynamicStackAllocation ||
+         ContainsAddressTakenParameter;
+}
+
+unsigned
+CheriCapDerivedLifetimes::estimateStaticFrameSize(Function &F,
+                                                  const DataLayout &DL) const {
+  unsigned FrameSizeBits = 0;
+  for (const BasicBlock &BB : F) {
+    for (const Instruction &I : BB) {
+      if (I.getOpcode() != Instruction::Alloca)
+        continue;
+      const auto &Allocation = reinterpret_cast<const AllocaInst &>(I);
+      if (!Allocation.getAllocatedType()->isSized())
+        continue;
+      auto Size = Allocation.getAllocationSizeInBits(DL);
+      if (Size)
+        FrameSizeBits += *Size;
+    }
+  }
+  return (FrameSizeBits + 7) / 8;
+}
+
+bool CheriCapDerivedLifetimes::containsDynamicStackAllocation(
+    Function &F, const LoopInfo &LI) const {
+  for (const BasicBlock &BB : F) {
+    for (const Instruction &I : BB) {
+      if (I.getOpcode() != Instruction::Alloca)
+        continue;
+      const auto &Allocation = reinterpret_cast<const AllocaInst &>(I);
+
+      // Dynamically-sized allocation
+      if (!Allocation.isStaticAlloca())
+        return true;
+
+      // Allocation that might be in a loop
+      if (LI.getLoopDepth(&BB) > 0)
+        return true;
+    }
+  }
+  return false;
+}
+
+bool CheriCapDerivedLifetimes::containsAddressTakenParameter(
+    Function &F) const {
+
+  // TODO: Implement
+
+  //  for (const auto &arg : F.args()) {
+  //    for (Use use : arg.users()) {
+  //      if (use.getUser()->)
+  //    }
+  //  }
+  //  if (arg.hasAddressTaken())
+  //    return true;
+  //  return false;
+
+  return false;
 }
 
 char CheriCapDerivedLifetimes::ID;
-INITIALIZE_PASS(CheriCapDerivedLifetimes, DEBUG_TYPE, PASS_NAME, false, false)
+
+INITIALIZE_PASS_BEGIN(CheriCapDerivedLifetimes, DEBUG_TYPE, PASS_NAME, false,
+                      false)
+INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
+INITIALIZE_PASS_END(CheriCapDerivedLifetimes, DEBUG_TYPE, PASS_NAME, false,
+                    false)
 
 ModulePass *llvm::createCheriCapDerivedLifetimesPass() {
   return new CheriCapDerivedLifetimes();

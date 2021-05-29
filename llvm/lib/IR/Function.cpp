@@ -1724,11 +1724,11 @@ bool Function::nullPointerIsDefined() const {
 bool Function::containsPossiblyEscapingLocals() const {
   MDNode *analysis = getMetadata("stackLifetimeSafety");
   if (analysis)
-    return dyn_cast<MDString>(analysis->getOperand(0))
-        ->getString()
-        .equals("safe");
+    return !dyn_cast<MDString>(analysis->getOperand(0))
+                ->getString()
+                .equals("safe");
   else
-    return false;
+    return true;
 }
 
 bool llvm::NullPointerIsDefined(const Function *F, unsigned AS) {

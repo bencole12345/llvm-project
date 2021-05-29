@@ -17,17 +17,20 @@ namespace {
 constexpr unsigned MinAlignment = 6;
 constexpr unsigned NumRepresentibleSizes = 7;
 constexpr unsigned MinRepresentibleFrameSize = 1 << MinAlignment;
-constexpr unsigned MaxRepresentibleFrameSize = MinRepresentibleFrameSize << (NumRepresentibleSizes - 1);
+constexpr unsigned MaxRepresentibleFrameSize = MinRepresentibleFrameSize
+                                               << (NumRepresentibleSizes - 1);
 } // anonymous namespace
 
-// TODO: Add tests for output
+bool frameTooLargeForCDL(uint64_t StackFrameSize) {
+  return StackFrameSize > MaxRepresentibleFrameSize;
+}
 
 unsigned getNumBitsAlignmentRequired(uint64_t StackFrameSize) {
   if (StackFrameSize > MaxRepresentibleFrameSize) {
-    // TODO: It's revocation time
-    llvm_unreachable("Stack frame too large to provide lifetime-based temporal safety");
-    return 0;
+    llvm_unreachable(
+        "Stack frame too large to provide lifetime-based temporal safety");
   }
+
   unsigned Bits = MinAlignment;
   StackFrameSize = (StackFrameSize - 1) / MinRepresentibleFrameSize;
   while (StackFrameSize) {

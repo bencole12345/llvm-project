@@ -24,6 +24,7 @@
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/RevocationStrategy.h"
 #include "llvm/MC/MCDwarf.h"
 
 #include <string>
@@ -884,141 +885,110 @@ void RISCVFrameLowering::emitCapDerivedLifetimesPrologue(
     const DebugLoc &DL, uint64_t StackFrameSize, Register SPReg,
     Optional<Register> FPReg) const {
 
+  using namespace cheri;
+
   MachineFunction *MF = MBB.getParent();
   const RISCVInstrInfo *TII = STI.getInstrInfo();
   MachineRegisterInfo &MRI = MF->getRegInfo();
-  const bool Escaping = MF->getFunction().containsPossiblyEscapingLocals();
   const bool HasFP = FPReg.hasValue();
 
-  RISCVCDLStackSlotsInfo Slots(Escaping, HasFP);
+  auto RevocationStrat = getFunctionRevocationStrategy(MF->getFunction());
 
-  if (Escaping) {
+  RISCVCDLStackSlotsInfo Slots(RevocationStrat, HasFP);
+  unsigned FrameSizeBits;
+
+  // Save the original stack pointer
+  Register OriginalCSP = MRI.createVirtualRegister(&RISCV::GPCRRegClass);
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CMove), OriginalCSP).addReg(SPReg);
+
+  // Reserve space for the stuff we need to store
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CIncOffset), SPReg)
+      .addReg(SPReg)
+      .addImm(-Slots.totalSize());
+
+  switch (RevocationStrat) {
+  case RevocationStrategy::ConditionalRevocation: {
     /*
-     * If the function contains (possibly-)escaping locals then we need to align
-     * its stack frame so that any lifetime checks will work.
-     *
-     * The alignment process loses information. We need to save the SP and
-     * possibly FP to the stack so that they can be restored again in the
-     * prologue.
+     * We're using capability-derived lifetimes for protection, so we need to
+     * align the stack pointer downwards.
      */
 
-    const unsigned TotalFrameSize = StackFrameSize + Slots.totalSize();
     const unsigned NumBitsAlignmentRequired =
-        RISCVFrameSizeBits::getNumBitsAlignmentRequired(TotalFrameSize);
-
+        RISCVFrameSizeBits::getNumBitsAlignmentRequired(StackFrameSize);
     const uint64_t Mask = 0xffffffffffffffff << NumBitsAlignmentRequired;
-    const unsigned FrameSizeBits =
-        RISCVFrameSizeBits::getFrameSizeBits(StackFrameSize);
+    FrameSizeBits = RISCVFrameSizeBits::getFrameSizeBits(StackFrameSize);
 
-    // Extract the current SP address
-    Register OriginalSPAddr = MRI.createVirtualRegister(&RISCV::GPRRegClass);
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CGetAddr), OriginalSPAddr)
-        .addReg(SPReg);
-
-    // Align it downwards using the mask to obtain the new SP address
-    Register NewSPAddr = MRI.createVirtualRegister(&RISCV::GPRRegClass);
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::ANDI), NewSPAddr)
-        .addReg(OriginalSPAddr, RegState::Kill)
+    // Extract CSP address, align it down using the mask, and update the CSP
+    // with its new address
+    Register SPAddress = MRI.createVirtualRegister(&RISCV::GPRRegClass);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CGetAddr), SPAddress).addReg(SPReg);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::ANDI), SPAddress)
+        .addReg(SPAddress)
         .addImm(Mask);
-
-    // Reserve stack space to store CDL data
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::ADDI), NewSPAddr)
-        .addReg(NewSPAddr)
-        .addImm(-Slots.totalSize());
-
-    // Remember the original SP capability before we update it
-    Register OriginalCSP = MRI.createVirtualRegister(&RISCV::GPCRRegClass);
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CMove), OriginalCSP).addReg(SPReg);
-
-    // Update the stack pointer to its new aligned location
     BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetAddr), SPReg)
         .addReg(SPReg)
-        .addReg(NewSPAddr, RegState::Kill);
+        .addReg(SPAddress, RegState::Kill);
 
-    // Save the old stack pointer in the slot we reserved
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
-        .addReg(OriginalCSP, RegState::Kill)
-        .addReg(SPReg)
-        .addImm(-Slots.getOffset(CDLStackSlot::SavedSP));
-
-    // Save the old frame pointer in the slot we reserved
-    if (FPReg)
-      BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
-          .addReg(*FPReg)
-          .addReg(SPReg)
-          .addImm(-Slots.getOffset(CDLStackSlot::SavedFP));
-
-    // Set stack pointer stack frame size bits
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSFS), SPReg)
-        .addReg(SPReg)
-        .addImm(FrameSizeBits);
-
-    // Write a zero to indicate that no StackLifetimeViolation has happened yet
+    // Write a zero to the "did a StackLifetimeViolation happen" slot
     BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSW))
         .addReg(RISCV::X0)
         .addReg(SPReg)
-        .addImm(-Slots.getOffset(CDLStackSlot::ViolationHappened));
+        .addImm(Slots.getOffset(CDLStackSlot::ViolationHappened));
 
-  } else {
+  } break;
+
+  case RevocationStrategy::UnconditionalRevocation:
+  case RevocationStrategy::NoRevocation:
     /*
-     * If the function doesn't contain any escaping locals then we don't need to
-     * align the stack frame.
-     *
-     * We do, however, still need to zero the stack frame size bits of the SP
-     * and possibly FP, because we want to disable lifetime checks for all
-     * locals of this function, and we need to save the old ones so that they
-     * can be restored at the end.
+     * We've either already managed to prove that this function is safe, or
+     * we've committed to doing an unconditional revocation sweep at the end.
+     * Either way, we want to set the lifetime bits to zero to disable
+     * capability-derived lifetime checks for any capability pointing to this
+     * frame.
      */
 
-    // TODO: Attempt to elide all work here
-
-    const unsigned FrameSizeBits = 0; // Special "non-stack" value
-
-    // Save the original stack pointer
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
-        .addReg(SPReg)
-        .addReg(SPReg)
-        .addImm(-Slots.getOffset(CDLStackSlot::SavedSP));
-
-    if (HasFP) {
-      // Save the original frame pointer
-      BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
-          .addReg(*FPReg)
-          .addReg(SPReg)
-          .addImm(-Slots.getOffset(CDLStackSlot::SavedFP));
-    }
-
-    // Bump the stack pointer down
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CIncOffset), SPReg)
-        .addReg(SPReg)
-        .addImm(-Slots.totalSize());
-
-    // Set the stack pointer's lifetime bits
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSFS), SPReg)
-        .addReg(SPReg)
-        .addImm(FrameSizeBits);
+    FrameSizeBits = 0;
   }
+
+  // Save the original CSP and CFP to the reserved stack space
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
+      .addReg(OriginalCSP, RegState::Kill)
+      .addReg(SPReg)
+      .addImm(Slots.getOffset(CDLStackSlot::SavedSP));
+  if (HasFP)
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
+        .addReg(*FPReg)
+        .addReg(SPReg)
+        .addImm(Slots.getOffset(CDLStackSlot::SavedFP));
+
+  // Set the stack pointer's frame-size bits
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSFS), SPReg)
+      .addReg(SPReg)
+      .addImm(FrameSizeBits);
 }
 
 void RISCVFrameLowering::emitCapDerivedLifetimesEpilogue(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator &MBBI,
     const DebugLoc &DL, Register SPReg, Optional<Register> FPReg) const {
+  using namespace cheri;
+
   const RISCVInstrInfo *TII = STI.getInstrInfo();
   MachineFunction *MF = MBB.getParent();
 
-  const bool Escaping = MF->getFunction().containsPossiblyEscapingLocals();
+  auto RevocationStrat = getFunctionRevocationStrategy(MF->getFunction());
+
   const bool HasFP = FPReg.hasValue();
-  RISCVCDLStackSlotsInfo Slots(Escaping, HasFP);
+  cheri::RISCVCDLStackSlotsInfo Slots(RevocationStrat, HasFP);
 
   // Restore the FP register that we saved to the stack (if we are using one)
   // (This must be done before restoring the old stack pointer!)
   if (HasFP)
     BuildMI(MBB, MBBI, DL, TII->get(RISCV::CLC_128), *FPReg)
         .addReg(SPReg)
-        .addImm(-Slots.getOffset(CDLStackSlot::SavedFP));
+        .addImm(Slots.getOffset(CDLStackSlot::SavedFP));
 
   // Restore the old stack pointer that we saved to the stack
   BuildMI(MBB, MBBI, DL, TII->get(RISCV::CLC_128), SPReg)
       .addReg(SPReg)
-      .addImm(-Slots.getOffset(CDLStackSlot::SavedSP));
+      .addImm(Slots.getOffset(CDLStackSlot::SavedSP));
 }

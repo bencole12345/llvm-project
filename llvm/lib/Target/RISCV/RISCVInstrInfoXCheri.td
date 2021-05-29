@@ -281,8 +281,11 @@ let defsCanBeSealed = 1 in
 def CCSeal          : Cheri_rr<0x1f, "ccseal", GPCR, GPCR>;
 let defsCanBeSealed = 1 in
 def CSealEntry      : Cheri_r<0x11, "csealentry", GPCR>;
-def CGetFrameBase   : Cheri_r<0x14, "cgetframebase", GPCR>;
 } // let mayTrap = 1
+
+let Predicates = [HasCheri] in {
+def CGetFrameBase   : Cheri_r<0x14, "cgetframebase", GPCR>;
+}
 
 def : InstAlias<"cincoffsetimm $cd, $cs1, $imm",
                 (CIncOffsetImm GPCR:$cd, GPCR:$cs1, simm12:$imm), 0>;
