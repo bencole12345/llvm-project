@@ -918,6 +918,9 @@ void RISCVFrameLowering::emitCapDerivedLifetimesPrologue(
     const uint64_t Mask = 0xffffffffffffffff << NumBitsAlignmentRequired;
     FrameSizeBits = RISCVFrameSizeBits::getFrameSizeBits(StackFrameSize);
 
+    if (FrameSizeBits == 2)
+      assert(Mask == 0xffffffffffffff80);
+
     // Extract CSP address, align it down using the mask, and update the CSP
     // with its new address
     Register SPAddress = MRI.createVirtualRegister(&RISCV::GPRRegClass);

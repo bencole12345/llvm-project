@@ -717,6 +717,9 @@ def : InstAlias<"csd $rs2, (${rs1})",
 let Predicates = [HasCheri, IsCapMode] in {
 def : Pat<(int_cheri_check_cap_store_cap GPCR:$rs1, GPCR:$rs2, simm12:$imm12),
           (CCSC_128 GPCR:$rs1, GPCR:$rs2, simm12:$imm12)>;
+
+def : Pat<(int_cheri_cap_get_csp), (CMove C2)>;
+
 }
 
 /// 'A' (Atomic Instructions) extension

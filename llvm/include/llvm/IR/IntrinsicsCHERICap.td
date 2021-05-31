@@ -194,3 +194,8 @@ def int_cheri_cap_set_frame_size :
 
 def int_cheri_cap_get_frame_base :
   Intrinsic<[llvm_anyptr_ty], [llvm_anyptr_ty], [IntrNoMem, IntrWillReturn]>;
+
+/// A hacky way to grab the stack pointer without it being sealed, as is the
+/// case when you use llvm.frameaddr.
+def int_cheri_cap_get_csp :
+  Intrinsic<[llvm_anyptr_ty], [], [IntrNoMem, IntrWillReturn]>;

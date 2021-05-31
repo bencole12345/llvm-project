@@ -8,7 +8,7 @@ namespace cheri {
 namespace {
 
 constexpr unsigned CapSize = 16;
-constexpr unsigned ViolationHappenedMarkerSize = 4;
+constexpr unsigned ViolationHappenedMarkerSize = CapSize;
 
 /// Defines the ordering of the CDL scheme's stack slots.
 const SmallVector<CDLStackSlot, 3> &getOrder() {

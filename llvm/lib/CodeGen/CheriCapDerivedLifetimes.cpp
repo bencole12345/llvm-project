@@ -32,6 +32,9 @@
 #define DEBUG_TYPE "cheri-cap-derived-lifetimes"
 #define PASS_NAME "CHERI use capability-derived lifetimes"
 
+// TODO: Explain why
+#define CAPREVOKE_SHADOW_FLAGS 0x00
+
 // Must be kept in sync with CheriBSD's defines in sys/sys/caprevoke.h.
 #define CAPREVOKE_STACK_JUST_THIS_FRAME 0x00
 #define CAPREVOKE_STACK_TO_STACK_END 0x01
@@ -157,14 +160,20 @@ bool CheriCapDerivedLifetimes::runOnModule(Module &Mod) {
 void CheriCapDerivedLifetimes::initialiseCaprevokeFunctions(Module *M) {
   LLVMContext &Context = M->getContext();
   DataLayout DL(M);
+  Type *IntTy = IntegerType::getInt32Ty(Context);
   Type *VoidTy = Type::getVoidTy(Context);
   Type *CharPtrTy =
       IntegerType::getInt8PtrTy(Context, DL.getProgramAddressSpace());
-  Type *IntTy = IntegerType::getInt32Ty(Context);
+  Type *CharPtrPtrTy = CharPtrTy->getPointerTo(DL.getProgramAddressSpace());
 
-  CaprevokeShadowFunction =
-      M->getOrInsertFunction("caprevoke_shadow", CharPtrTy, CharPtrTy);
-  CaprevokeStackFunction = M->getOrInsertFunction("caprevoke_stack", VoidTy,
+  //  CaprevokeShadowFunction =
+  //      M->getOrInsertFunction("caprevoke_shadow", CharPtrTy, CharPtrTy);
+  CaprevokeShadowFunction = M->getOrInsertFunction(
+      "caprevoke_shadow", IntTy, IntTy, CharPtrTy, CharPtrPtrTy);
+  //  CaprevokeStackFunction = M->getOrInsertFunction("caprevoke_stack", VoidTy,
+  //                                                  CharPtrTy, CharPtrTy,
+  //                                                  IntTy);
+  CaprevokeStackFunction = M->getOrInsertFunction("caprevoke_stack", IntTy,
                                                   CharPtrTy, CharPtrTy, IntTy);
 }
 
@@ -304,12 +313,17 @@ void CheriCapDerivedLifetimes::insertFrameRevocation(IRBuilder<> &Builder,
   Value *FramePointer = getFramePointer(Context, Builder, CharPtrTy);
   Type *Int32Ty = IntegerType::getInt32Ty(Context);
 
+  Constant *CaprevokeShadowFlags =
+      ConstantInt::get(Int32Ty, CAPREVOKE_SHADOW_FLAGS, true);
+  Value *ShadowPtrPtr =
+      Builder.CreateAlloca(CharPtrTy, DL.getProgramAddressSpace());
+  Builder.CreateCall(CaprevokeShadowFunction,
+                     {CaprevokeShadowFlags, FramePointer, ShadowPtrPtr});
+
+  Value *ShadowPtr = Builder.CreateLoad(ShadowPtrPtr);
   Constant *Mode =
       ConstantInt::get(Int32Ty, CAPREVOKE_STACK_JUST_THIS_FRAME, true);
-  CallInst *ShadowStackPtr =
-      Builder.CreateCall(CaprevokeShadowFunction, {FramePointer});
-  Builder.CreateCall(CaprevokeStackFunction,
-                     {ShadowStackPtr, FramePointer, Mode});
+  Builder.CreateCall(CaprevokeStackFunction, {ShadowPtr, FramePointer, Mode});
 }
 
 void CheriCapDerivedLifetimes::insertRevocationToEndOfStack(
@@ -321,12 +335,17 @@ void CheriCapDerivedLifetimes::insertRevocationToEndOfStack(
   Value *FramePointer = getFramePointer(Context, Builder, CharPtrTy);
   Type *Int32Ty = IntegerType::getInt32Ty(Context);
 
+  Constant *CaprevokeShadowFlags =
+      ConstantInt::get(Int32Ty, CAPREVOKE_SHADOW_FLAGS, true);
+  Value *ShadowPtrPtr =
+      Builder.CreateAlloca(CharPtrTy, DL.getProgramAddressSpace());
+  Builder.CreateCall(CaprevokeShadowFunction,
+                     {CaprevokeShadowFlags, FramePointer, ShadowPtrPtr});
+
+  Value *ShadowPtr = Builder.CreateLoad(ShadowPtrPtr);
   Constant *Mode =
       ConstantInt::get(Int32Ty, CAPREVOKE_STACK_TO_STACK_END, true);
-  CallInst *ShadowStackPtr =
-      Builder.CreateCall(CaprevokeShadowFunction, {FramePointer});
-  Builder.CreateCall(CaprevokeStackFunction,
-                     {ShadowStackPtr, FramePointer, Mode});
+  Builder.CreateCall(CaprevokeStackFunction, {ShadowPtr, FramePointer, Mode});
 }
 
 void CheriCapDerivedLifetimes::insertTestAndRevokeBefore(Instruction &I,
@@ -338,11 +357,13 @@ void CheriCapDerivedLifetimes::insertTestAndRevokeBefore(Instruction &I,
       IntegerType::getInt32PtrTy(Context, DL.getProgramAddressSpace());
   IRBuilder<> Builder(&I);
 
+  // TODO: Tidy
   // Get the frame address
   Value *FramePointer = getFramePointer(Context, Builder, Int32PtrTy);
   Value *StartOfFrame =
       Builder.CreateIntrinsic(Intrinsic::cheri_cap_get_frame_base,
                               {Int32PtrTy, Int32PtrTy}, {FramePointer});
+  //  Value *StartOfFrame = FramePointer;
 
   // Load the value stored there to determine whether revocation is required
   Value *RevocationRequiredFlag =
@@ -363,9 +384,20 @@ Value *CheriCapDerivedLifetimes::getFramePointer(LLVMContext &Context,
   assert(DesiredType->isPointerTy());
 
   Type *Int32Ty = IntegerType::getInt32Ty(Context);
+  // TODO: Remove unused variable?
   Constant *Level = ConstantInt::get(Int32Ty, 0);
-  return Builder.CreateIntrinsic(Intrinsic::frameaddress, {DesiredType},
-                                 {Level});
+  //  return Builder.CreateIntrinsic(Intrinsic::frameaddress, {DesiredType},
+  //                                 {Level});
+
+  // TODO: Fix
+  // BUG: This is the wrong address
+
+  // This may be "at the end of the function", but it's still before my
+  // frame-lowering logic has done its thing, so this will not be the nice
+  // capability pointing to the start of the stack frame.
+
+  return Builder.CreateIntrinsic(Intrinsic::cheri_cap_get_csp, {DesiredType},
+                                 {});
 }
 
 bool CheriCapDerivedLifetimes::functionIncompatibleWithCDL(
