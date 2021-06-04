@@ -33,11 +33,12 @@
 #define PASS_NAME "CHERI use capability-derived lifetimes"
 
 // TODO: Explain why
-#define CAPREVOKE_SHADOW_FLAGS 0x00
+//#define CAPREVOKE_SHADOW_FLAGS 0x00
+#define CAPREVOKE_SHADOW_FLAGS 0x07
 
 // Must be kept in sync with CheriBSD's defines in sys/sys/caprevoke.h.
-#define CAPREVOKE_STACK_JUST_THIS_FRAME 0x00
-#define CAPREVOKE_STACK_TO_STACK_END 0x01
+//#define CAPREVOKE_STACK_JUST_THIS_FRAME 0x00
+//#define CAPREVOKE_STACK_TO_STACK_END 0x01
 
 using namespace llvm;
 using namespace llvm::cheri;
@@ -86,7 +87,7 @@ private:
 
   /// Inserts a stack lifetime check directly before a pointer-type store
   /// instruction.
-  void insertLifetimeCheckBefore(StoreInst &I, Module *M) const;
+  void insertLifetimeCheckForStore(StoreInst &I, Module *M) const;
 
   /// Determines the revocation strategy to be used for the function.
   RevocationStrategy determineRevocationStrategy(Function &F, Module *M,
@@ -161,20 +162,14 @@ void CheriCapDerivedLifetimes::initialiseCaprevokeFunctions(Module *M) {
   LLVMContext &Context = M->getContext();
   DataLayout DL(M);
   Type *IntTy = IntegerType::getInt32Ty(Context);
-  Type *VoidTy = Type::getVoidTy(Context);
   Type *CharPtrTy =
       IntegerType::getInt8PtrTy(Context, DL.getProgramAddressSpace());
   Type *CharPtrPtrTy = CharPtrTy->getPointerTo(DL.getProgramAddressSpace());
 
-  //  CaprevokeShadowFunction =
-  //      M->getOrInsertFunction("caprevoke_shadow", CharPtrTy, CharPtrTy);
   CaprevokeShadowFunction = M->getOrInsertFunction(
       "caprevoke_shadow", IntTy, IntTy, CharPtrTy, CharPtrPtrTy);
-  //  CaprevokeStackFunction = M->getOrInsertFunction("caprevoke_stack", VoidTy,
-  //                                                  CharPtrTy, CharPtrTy,
-  //                                                  IntTy);
   CaprevokeStackFunction = M->getOrInsertFunction("caprevoke_stack", IntTy,
-                                                  CharPtrTy, CharPtrTy, IntTy);
+                                                  CharPtrTy, CharPtrTy);
 }
 
 bool CheriCapDerivedLifetimes::runOnFunction(Function &F, Module *M,
@@ -216,14 +211,14 @@ bool CheriCapDerivedLifetimes::insertLifetimeChecks(Function &F,
       if (!Store.getValueOperand()->getType()->isPointerTy())
         continue;
 
-      insertLifetimeCheckBefore(Store, M);
+      insertLifetimeCheckForStore(Store, M);
       ContainsChecks = true;
     }
   }
   return ContainsChecks;
 }
 
-void CheriCapDerivedLifetimes::insertLifetimeCheckBefore(StoreInst &I,
+void CheriCapDerivedLifetimes::insertLifetimeCheckForStore(StoreInst &I,
                                                          Module *M) const {
   assert(I.getValueOperand()->getType()->isPointerTy());
 
@@ -237,7 +232,8 @@ void CheriCapDerivedLifetimes::insertLifetimeCheckBefore(StoreInst &I,
   Type *SizeTy = Type::getIntNTy(Context, DL.getIndexSizeInBits(ValueAS));
 
   // Insert the ccsc instruction
-  IRBuilder<> Builder(&I);
+//  IRBuilder<> Builder(&I);
+  IRBuilder<> Builder(I.getNextNode());
   // TODO: Handle offsets correctly
   Builder.CreateIntrinsic(Intrinsic::cheri_check_cap_store_cap,
                           {I.getValueOperand()->getType(),
@@ -321,9 +317,9 @@ void CheriCapDerivedLifetimes::insertFrameRevocation(IRBuilder<> &Builder,
                      {CaprevokeShadowFlags, FramePointer, ShadowPtrPtr});
 
   Value *ShadowPtr = Builder.CreateLoad(ShadowPtrPtr);
-  Constant *Mode =
-      ConstantInt::get(Int32Ty, CAPREVOKE_STACK_JUST_THIS_FRAME, true);
-  Builder.CreateCall(CaprevokeStackFunction, {ShadowPtr, FramePointer, Mode});
+//  Constant *Mode =
+//      ConstantInt::get(Int32Ty, CAPREVOKE_STACK_JUST_THIS_FRAME, true);
+  Builder.CreateCall(CaprevokeStackFunction, {FramePointer, ShadowPtr});
 }
 
 void CheriCapDerivedLifetimes::insertRevocationToEndOfStack(
@@ -343,9 +339,9 @@ void CheriCapDerivedLifetimes::insertRevocationToEndOfStack(
                      {CaprevokeShadowFlags, FramePointer, ShadowPtrPtr});
 
   Value *ShadowPtr = Builder.CreateLoad(ShadowPtrPtr);
-  Constant *Mode =
-      ConstantInt::get(Int32Ty, CAPREVOKE_STACK_TO_STACK_END, true);
-  Builder.CreateCall(CaprevokeStackFunction, {ShadowPtr, FramePointer, Mode});
+//  Constant *Mode =
+//      ConstantInt::get(Int32Ty, CAPREVOKE_STACK_TO_STACK_END, true);
+  Builder.CreateCall(CaprevokeStackFunction, {FramePointer, ShadowPtr});
 }
 
 void CheriCapDerivedLifetimes::insertTestAndRevokeBefore(Instruction &I,

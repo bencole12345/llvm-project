@@ -902,7 +902,7 @@ void RISCVFrameLowering::emitCapDerivedLifetimesPrologue(
   BuildMI(MBB, MBBI, DL, TII->get(RISCV::CMove), OriginalCSP).addReg(SPReg);
 
   // Reserve space for the stuff we need to store
-  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CIncOffset), SPReg)
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CIncOffsetImm), SPReg)
       .addReg(SPReg)
       .addImm(-Slots.totalSize());
 
