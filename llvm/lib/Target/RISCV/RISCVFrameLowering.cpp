@@ -906,6 +906,10 @@ void RISCVFrameLowering::emitCapDerivedLifetimesPrologue(
       .addReg(SPReg)
       .addImm(-Slots.totalSize());
 
+  // Virtual register to hold the new SP address
+  Register SPAddress = MRI.createVirtualRegister(&RISCV::GPRRegClass);
+  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CGetAddr), SPAddress).addReg(SPReg);
+
   switch (RevocationStrat) {
   case RevocationStrategy::ConditionalRevocation: {
     /*
@@ -918,19 +922,20 @@ void RISCVFrameLowering::emitCapDerivedLifetimesPrologue(
     const uint64_t Mask = 0xffffffffffffffff << NumBitsAlignmentRequired;
     FrameSizeBits = RISCVFrameSizeBits::getFrameSizeBits(StackFrameSize);
 
-    if (FrameSizeBits == 2)
-      assert(Mask == 0xffffffffffffff80);
-
     // Extract CSP address, align it down using the mask, and update the CSP
     // with its new address
-    Register SPAddress = MRI.createVirtualRegister(&RISCV::GPRRegClass);
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CGetAddr), SPAddress).addReg(SPReg);
     BuildMI(MBB, MBBI, DL, TII->get(RISCV::ANDI), SPAddress)
         .addReg(SPAddress)
         .addImm(Mask);
-    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetAddr), SPReg)
-        .addReg(SPReg)
-        .addReg(SPAddress, RegState::Kill);
+    if (HasFP) {
+      BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetAddr), SPReg)
+          .addReg(SPReg)
+          .addReg(SPAddress);
+    } else {
+      BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSetAddr), SPReg)
+          .addReg(SPReg)
+          .addReg(SPAddress, RegState::Kill);
+    }
 
     // Write a zero to the "did a StackLifetimeViolation happen" slot
     BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSW))
@@ -954,20 +959,45 @@ void RISCVFrameLowering::emitCapDerivedLifetimesPrologue(
   }
 
   // Save the original CSP and CFP to the reserved stack space
-  BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
-      .addReg(OriginalCSP, RegState::Kill)
-      .addReg(SPReg)
-      .addImm(Slots.getOffset(CDLStackSlot::SavedSP));
-  if (HasFP)
+  if (HasFP) {
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
+        .addReg(OriginalCSP)
+        .addReg(SPReg)
+        .addImm(Slots.getOffset(CDLStackSlot::SavedSP));
     BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
         .addReg(*FPReg)
         .addReg(SPReg)
         .addImm(Slots.getOffset(CDLStackSlot::SavedFP));
+  } else {
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSC_128))
+        .addReg(OriginalCSP, RegState::Kill)
+        .addReg(SPReg)
+        .addImm(Slots.getOffset(CDLStackSlot::SavedSP));
+  }
 
   // Set the stack pointer's frame-size bits
   BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSFS), SPReg)
       .addReg(SPReg)
       .addImm(FrameSizeBits);
+
+  // Shift the frame pointer by the same amount as the stack pointer and set
+  // up its frame-size bits too
+  if (HasFP) {
+    Register OriginalCSPAddress =
+        MRI.createVirtualRegister(&RISCV::GPRRegClass);
+    Register Delta = MRI.createVirtualRegister(&RISCV::GPRRegClass);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CGetAddr), OriginalCSPAddress)
+        .addReg(OriginalCSP, RegState::Kill);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::SUB), Delta)
+        .addReg(SPAddress)
+        .addReg(OriginalCSPAddress, RegState::Kill);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CIncOffset), *FPReg)
+        .addReg(*FPReg)
+        .addReg(Delta, RegState::Kill);
+    BuildMI(MBB, MBBI, DL, TII->get(RISCV::CSFS), *FPReg)
+        .addReg(*FPReg)
+        .addImm(FrameSizeBits);
+  }
 }
 
 void RISCVFrameLowering::emitCapDerivedLifetimesEpilogue(

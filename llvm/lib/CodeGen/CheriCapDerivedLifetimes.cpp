@@ -32,20 +32,12 @@
 #define DEBUG_TYPE "cheri-cap-derived-lifetimes"
 #define PASS_NAME "CHERI use capability-derived lifetimes"
 
-// TODO: Explain why
-//#define CAPREVOKE_SHADOW_FLAGS 0x00
 #define CAPREVOKE_SHADOW_FLAGS 0x07
-
-// Must be kept in sync with CheriBSD's defines in sys/sys/caprevoke.h.
-//#define CAPREVOKE_STACK_JUST_THIS_FRAME 0x00
-//#define CAPREVOKE_STACK_TO_STACK_END 0x01
 
 using namespace llvm;
 using namespace llvm::cheri;
 
 namespace {
-
-// TODO: Add some statistics
 
 cl::opt<bool> UnconditionalRevocationAfterAllFunctions(
     "unconditional-revoke-after-all-functions",
@@ -105,11 +97,7 @@ private:
   bool blockIsReturnBlock(const BasicBlock &BB) const;
 
   /// Insert a revocation call to revoke everything in the current stack frame.
-  void insertFrameRevocation(IRBuilder<> &Builder, Module *M) const;
-
-  /// Insert a revocation call to revoke everything between the current frame
-  /// pointer and the end of the stack.
-  void insertRevocationToEndOfStack(IRBuilder<> &Builder, Module *M) const;
+  void insertRevocation(IRBuilder<> &Builder, Module *M) const;
 
   /// Inserts code to perform a revocation sweep before the given Instruction.
   void insertTestAndRevokeBefore(Instruction &I, Module *M) const;
@@ -232,9 +220,8 @@ void CheriCapDerivedLifetimes::insertLifetimeCheckForStore(StoreInst &I,
   Type *SizeTy = Type::getIntNTy(Context, DL.getIndexSizeInBits(ValueAS));
 
   // Insert the ccsc instruction
-//  IRBuilder<> Builder(&I);
   IRBuilder<> Builder(I.getNextNode());
-  // TODO: Handle offsets correctly
+  // TODO: Handle offsets better (it's surprisingly complex!)
   Builder.CreateIntrinsic(Intrinsic::cheri_check_cap_store_cap,
                           {I.getValueOperand()->getType(),
                            I.getPointerOperand()->getType(), SizeTy},
@@ -273,7 +260,6 @@ void CheriCapDerivedLifetimes::insertConditionalRevocation(Function &F,
     if (blockIsReturnBlock(BB))
       TerminatingBlocks.push_back(&BB);
   }
-  assert(!TerminatingBlocks.empty());
   for (BasicBlock *BB : TerminatingBlocks) {
     auto &ReturnStatement = BB->back();
     insertTestAndRevokeBefore(ReturnStatement, M);
@@ -288,11 +274,10 @@ void CheriCapDerivedLifetimes::insertUnconditionalRevocation(Function &F,
     if (blockIsReturnBlock(BB))
       TerminatingBlocks.push_back(&BB);
   }
-  assert(!TerminatingBlocks.empty());
   for (BasicBlock *BB : TerminatingBlocks) {
     auto &ReturnStatement = BB->back();
     IRBuilder<> Builder(&ReturnStatement);
-    insertRevocationToEndOfStack(Builder, M);
+    insertRevocation(Builder, M);
   }
 }
 
@@ -300,7 +285,7 @@ bool CheriCapDerivedLifetimes::blockIsReturnBlock(const BasicBlock &BB) const {
   return !BB.empty() && BB.back().getOpcode() == Instruction::Ret;
 }
 
-void CheriCapDerivedLifetimes::insertFrameRevocation(IRBuilder<> &Builder,
+void CheriCapDerivedLifetimes::insertRevocation(IRBuilder<> &Builder,
                                                      Module *M) const {
   LLVMContext &Context = M->getContext();
   DataLayout DL(M);
@@ -317,30 +302,6 @@ void CheriCapDerivedLifetimes::insertFrameRevocation(IRBuilder<> &Builder,
                      {CaprevokeShadowFlags, FramePointer, ShadowPtrPtr});
 
   Value *ShadowPtr = Builder.CreateLoad(ShadowPtrPtr);
-//  Constant *Mode =
-//      ConstantInt::get(Int32Ty, CAPREVOKE_STACK_JUST_THIS_FRAME, true);
-  Builder.CreateCall(CaprevokeStackFunction, {FramePointer, ShadowPtr});
-}
-
-void CheriCapDerivedLifetimes::insertRevocationToEndOfStack(
-    IRBuilder<> &Builder, Module *M) const {
-  LLVMContext &Context = M->getContext();
-  DataLayout DL(M);
-  Type *CharPtrTy =
-      IntegerType::getInt32PtrTy(Context, DL.getProgramAddressSpace());
-  Value *FramePointer = getFramePointer(Context, Builder, CharPtrTy);
-  Type *Int32Ty = IntegerType::getInt32Ty(Context);
-
-  Constant *CaprevokeShadowFlags =
-      ConstantInt::get(Int32Ty, CAPREVOKE_SHADOW_FLAGS, true);
-  Value *ShadowPtrPtr =
-      Builder.CreateAlloca(CharPtrTy, DL.getProgramAddressSpace());
-  Builder.CreateCall(CaprevokeShadowFunction,
-                     {CaprevokeShadowFlags, FramePointer, ShadowPtrPtr});
-
-  Value *ShadowPtr = Builder.CreateLoad(ShadowPtrPtr);
-//  Constant *Mode =
-//      ConstantInt::get(Int32Ty, CAPREVOKE_STACK_TO_STACK_END, true);
   Builder.CreateCall(CaprevokeStackFunction, {FramePointer, ShadowPtr});
 }
 
@@ -353,13 +314,11 @@ void CheriCapDerivedLifetimes::insertTestAndRevokeBefore(Instruction &I,
       IntegerType::getInt32PtrTy(Context, DL.getProgramAddressSpace());
   IRBuilder<> Builder(&I);
 
-  // TODO: Tidy
   // Get the frame address
   Value *FramePointer = getFramePointer(Context, Builder, Int32PtrTy);
   Value *StartOfFrame =
       Builder.CreateIntrinsic(Intrinsic::cheri_cap_get_frame_base,
                               {Int32PtrTy, Int32PtrTy}, {FramePointer});
-  //  Value *StartOfFrame = FramePointer;
 
   // Load the value stored there to determine whether revocation is required
   Value *RevocationRequiredFlag =
@@ -371,27 +330,13 @@ void CheriCapDerivedLifetimes::insertTestAndRevokeBefore(Instruction &I,
   Instruction *NewTerminator =
       SplitBlockAndInsertIfThen(RevocationRequired, &I, false);
   Builder.SetInsertPoint(NewTerminator);
-  insertFrameRevocation(Builder, M);
+  insertRevocation(Builder, M);
 }
 
 Value *CheriCapDerivedLifetimes::getFramePointer(LLVMContext &Context,
                                                  IRBuilder<> &Builder,
                                                  Type *DesiredType) const {
   assert(DesiredType->isPointerTy());
-
-  Type *Int32Ty = IntegerType::getInt32Ty(Context);
-  // TODO: Remove unused variable?
-  Constant *Level = ConstantInt::get(Int32Ty, 0);
-  //  return Builder.CreateIntrinsic(Intrinsic::frameaddress, {DesiredType},
-  //                                 {Level});
-
-  // TODO: Fix
-  // BUG: This is the wrong address
-
-  // This may be "at the end of the function", but it's still before my
-  // frame-lowering logic has done its thing, so this will not be the nice
-  // capability pointing to the start of the stack frame.
-
   return Builder.CreateIntrinsic(Intrinsic::cheri_cap_get_csp, {DesiredType},
                                  {});
 }
@@ -402,10 +347,8 @@ bool CheriCapDerivedLifetimes::functionIncompatibleWithCDL(
 
   bool FrameTooBig = estimateStaticFrameSize(F, DL) > 4192;
   bool ContainsDynamicStackAllocation = containsDynamicStackAllocation(F, LI);
-  bool ContainsAddressTakenParameter = containsAddressTakenParameter(F);
 
-  return FrameTooBig || ContainsDynamicStackAllocation ||
-         ContainsAddressTakenParameter;
+  return FrameTooBig || ContainsDynamicStackAllocation;
 }
 
 unsigned
@@ -444,23 +387,6 @@ bool CheriCapDerivedLifetimes::containsDynamicStackAllocation(
         return true;
     }
   }
-  return false;
-}
-
-bool CheriCapDerivedLifetimes::containsAddressTakenParameter(
-    Function &F) const {
-
-  // TODO: Implement
-
-  //  for (const auto &arg : F.args()) {
-  //    for (Use use : arg.users()) {
-  //      if (use.getUser()->)
-  //    }
-  //  }
-  //  if (arg.hasAddressTaken())
-  //    return true;
-  //  return false;
-
   return false;
 }
 

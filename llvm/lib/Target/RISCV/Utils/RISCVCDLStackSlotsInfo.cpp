@@ -8,6 +8,8 @@ namespace cheri {
 namespace {
 
 constexpr unsigned CapSize = 16;
+
+// This is for alignment, not because we actually need that much data
 constexpr unsigned ViolationHappenedMarkerSize = CapSize;
 
 /// Defines the ordering of the CDL scheme's stack slots.
